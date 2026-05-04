@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Generated runtime state — these directories' shape is preserved via
+# .gitkeep but their contents are local artifacts, not source.
+ideas/*.md
+runs/*
+state/*
+!ideas/.gitkeep
+!runs/.gitkeep
+!state/.gitkeep
+
+# Individualized product context. The repo ships templates as
+# context/*.example.md; the live files are local-only because they
+# describe a specific product (often with internal details).
+context/product.md
+context/decisions.md
+
+# Editor + OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env / secrets
+.env
+.env.local
+.env.*.local

@@ -1,0 +1,23 @@
+{
+  "name": "idea-harness",
+  "version": "1.0.0",
+  "description": "A purpose-built harness for capturing, brainstorming, and graduating LetsBarker ideas",
+  "scripts": {
+    "garden": "ts-node scripts/garden.ts",
+    "garden:dry": "ts-node scripts/garden.ts -- --dry-run",
+    "waiting": "ts-node scripts/review.ts list",
+    "review": "ts-node scripts/review.ts",
+    "status": "ts-node scripts/review.ts",
+    "inspect": "ts-node scripts/inspect.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  }
+}
