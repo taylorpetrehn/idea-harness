@@ -16,10 +16,9 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "outDir": "dist",
-    "rootDir": "scripts",
     "sourceMap": true,
     "declaration": false
   },
-  "include": ["scripts/**/*.ts"],
+  "include": ["scripts/**/*.ts", "bin/**/*.ts"],
   "exclude": ["node_modules", "dist", "ideas", "runs", "state"]
 }
