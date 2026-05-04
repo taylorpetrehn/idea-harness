@@ -31,7 +31,8 @@ import * as os from "os";
 import { spawn } from "child_process";
 import { Run, writeRunArtifact } from "../lib/runs";
 import { loadProjects, ProjectConfig } from "../lib/projects";
-import { setStatusInFile, IdeaSummary, listIdeas } from "../lib/ideas";
+import { setStatusInFile, IdeaSummary, listIdeas, appendNote } from "../lib/ideas";
+import { prepareWorktree } from "../lib/worktree";
 import { log } from "../lib/log";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
@@ -41,6 +42,7 @@ export interface BuildResult {
   status: "pr-open" | "failed" | "dry";
   branch: string;
   base_branch: string;
+  worktree_path: string | null;
   pr_url: string | null;
   durationMs: number;
   exitCode: number;
@@ -78,19 +80,25 @@ const CLI_TIMEOUT_MS = parseInt(process.env.IDEA_HARNESS_BUILDER_TIMEOUT_MS ?? "
 
 const BUILD_SYSTEM_PROMPT = `You are Claude Code, invoked by the LetsBarker idea-harness to turn an accepted idea into a real pull request.
 
+You are running inside a git WORKTREE that has already been set up for you:
+- cwd is the worktree directory (NOT the user's primary checkout)
+- BRANCH_NAME has already been created and checked out, branched from origin/BASE_BRANCH
+- Working tree is clean — \`git status\` should show no changes when you start
+You don't need to create a branch. You just implement, commit, push, PR.
+
 Your job in this session, in order:
 1. Read the brainstorm in the user message — it is your spec. Identify the chosen variant (from the BUILD_VARIANT directive or the **If accepted, build:** line).
-2. Explore the codebase (grep, read) to find the right files to change. The brainstorm's "Existing footprint" section is your starting point — verify it before relying on it.
-3. Create the feature branch named in BRANCH_NAME, branched from BASE_BRANCH.
+2. Confirm \`git rev-parse --abbrev-ref HEAD\` returns BRANCH_NAME and \`git status\` is clean. If not, STOP and explain — the harness set this up wrong.
+3. Explore the codebase (grep, read) to find the right files to change. The brainstorm's "Existing footprint" section is your starting point — verify it before relying on it.
 4. Implement the chosen variant. Stay narrowly scoped — do not refactor surrounding code.
 5. Run the project's test command (check package.json / Gemfile for the convention). Fix any tests you broke.
 6. Commit the changes on the feature branch with a message that references the idea slug.
-7. Push the branch to origin.
+7. Push the branch to origin (\`git push -u origin BRANCH_NAME\`).
 8. Open a PR with \`gh pr create --base BASE_BRANCH --head BRANCH_NAME --title "<short title>" --body "<body>"\`. The body should reference the idea slug and include the brainstorm's "Why" sentence.
 9. As the LAST line of your response — and nothing else after it — print: PR_URL=<the URL gh returned>
 
 Constraints:
-- Never push to main, master, preview, or any branch other than BRANCH_NAME.
+- Never check out, push to, or merge into main, master, preview, or any branch other than BRANCH_NAME.
 - Never merge the PR. The PR is the human gate.
 - Never use --no-verify or --no-gpg-sign.
 - The harness invokes you with --permission-mode bypassPermissions specifically so you can run git and gh without per-command approval. Stay within the constraints above; the permission removal is for ergonomics, not for taking risks.
@@ -101,13 +109,21 @@ Output format: prose is fine for steps 1-8 (you can think out loud, run commands
 
 const RESUME_SYSTEM_PROMPT = `You are Claude Code, recovering an in-flight build for the LetsBarker idea-harness.
 
-A previous session implemented the changes but couldn't complete the commit/push/PR step. Your only job is to land the existing work.
+You are running inside a git WORKTREE that the harness set up:
+- cwd is the worktree directory (NOT the user's primary checkout)
+- BRANCH_NAME is checked out
+- The worktree may or may not contain uncommitted changes from a prior session — check \`git status\` to see
+
+A previous session implemented the changes but couldn't complete the commit/push/PR step. Your only job is to land whatever's there.
 
 Your job in this session, in order:
-1. Confirm you are on the branch named in BRANCH_NAME. \`git status\` should show uncommitted changes (or staged/committed-but-unpushed work).
-2. If there are uncommitted changes, review them with \`git diff\` to confirm they match the BUILD_VARIANT in the user message. If anything looks wrong (totally unrelated edits, secrets, huge unintended diffs), STOP and explain — do NOT commit garbage just to land a PR.
-3. Stage and commit the changes with a clear message referencing the idea slug.
-4. Push the branch to origin.
+1. Confirm \`git rev-parse --abbrev-ref HEAD\` returns BRANCH_NAME.
+2. Run \`git status\` to see the state. Three possible cases:
+   a. Uncommitted changes → review with \`git diff\` to confirm they match BUILD_VARIANT in the user message. If anything looks wrong (totally unrelated edits, secrets, huge unintended diffs), STOP and explain — do NOT commit garbage just to land a PR.
+   b. Clean working tree but local commits not pushed → push them.
+   c. Clean working tree and no local commits → there's nothing to recover from this worktree. If \`gh pr view BRANCH_NAME\` returns an existing PR, print its URL as PR_URL= and stop. Otherwise STOP and explain.
+3. Stage and commit any uncommitted changes with a clear message referencing the idea slug.
+4. Push the branch to origin (\`git push -u origin BRANCH_NAME\`).
 5. Open a PR with \`gh pr create --base BASE_BRANCH --head BRANCH_NAME --title "<short title>" --body "<body>"\`. The body should reference the idea slug and include the brainstorm's "Why" sentence.
 6. As the LAST line of your response — and nothing else after it — print: PR_URL=<the URL gh returned>
 
@@ -153,6 +169,7 @@ export async function build(
     log.info(`  branch: ${branch} (base: ${baseBranch})`);
     log.info(`  variant: ${variant}`);
     log.info(`  prompt length: ${userPrompt.length} chars`);
+    log.info(`  (worktree would be created at <repo-parent>/${path.basename(repoPath)}-worktrees/${branch.replace(/\//g, "-")})`);
     writeRunArtifact(run, `build-${idea.slug}.json`, {
       slug: idea.slug,
       intent,
@@ -169,6 +186,7 @@ export async function build(
       status: "dry",
       branch,
       base_branch: baseBranch,
+      worktree_path: null,
       pr_url: null,
       durationMs: Date.now() - start,
       exitCode: 0,
@@ -195,6 +213,7 @@ export async function build(
       status: "pr-open",
       branch,
       base_branch: baseBranch,
+      worktree_path: null,
       pr_url: fakeUrl,
       durationMs: Date.now() - start,
       exitCode: 0,
@@ -203,14 +222,50 @@ export async function build(
     };
   }
 
-  // ── Live mode: spawn claude in the repo ──────────────────────────────
+  // ── Live mode: prepare worktree, then spawn claude inside it ─────────
+  let worktree;
+  try {
+    worktree = await prepareWorktree({ repoPath, branch, baseBranch, intent });
+  } catch (err) {
+    const msg = `Worktree preparation failed: ${(err as Error).message}`;
+    log.error(`  ${msg}`);
+    writeRunArtifact(run, `build-${idea.slug}.error.json`, {
+      slug: idea.slug,
+      intent,
+      branch,
+      baseBranch,
+      stage: "prepareWorktree",
+      error: (err as Error).message,
+      stack: (err as Error).stack,
+    });
+    return {
+      slug: idea.slug,
+      status: "failed",
+      branch,
+      base_branch: baseBranch,
+      worktree_path: null,
+      pr_url: null,
+      durationMs: Date.now() - start,
+      exitCode: -1,
+      stdoutTail: "",
+      stderrTail: msg,
+    };
+  }
+
+  // Drop a breadcrumb on the idea so the user can `cd` to the worktree.
+  appendNoteSafe(
+    idea,
+    `${intent === "resume" ? "Resume" : "Build"} worktree: ${worktree.path} (branch ${branch})`
+  );
+
   const logPath = path.join(run.dir, `build-${idea.slug}.log`);
   const verb = intent === "resume" ? "Resuming" : "Building";
-  log.info(`${verb} ${idea.slug} in ${repoPath} on branch ${branch}…`);
+  log.info(`${verb} ${idea.slug} on branch ${branch}…`);
+  log.info(`  Worktree: ${worktree.path}${worktree.reused ? " (reused)" : " (fresh)"}`);
   log.info(`  Live output: tail -f ${logPath}`);
 
   const result = await spawnClaude({
-    cwd: repoPath,
+    cwd: worktree.path,
     userPrompt,
     systemPrompt,
     logPath,
@@ -224,6 +279,8 @@ export async function build(
     intent,
     mode: m,
     repoPath,
+    worktreePath: worktree.path,
+    worktreeReused: worktree.reused,
     branch,
     baseBranch,
     variant,
@@ -242,12 +299,21 @@ export async function build(
     status,
     branch,
     base_branch: baseBranch,
+    worktree_path: worktree.path,
     pr_url: prUrl,
     durationMs: Date.now() - start,
     exitCode: result.exitCode,
     stdoutTail: tail(result.stdout, 2000),
     stderrTail: tail(result.stderr, 2000),
   };
+}
+
+function appendNoteSafe(idea: IdeaSummary, note: string): void {
+  try {
+    appendNote(path.join(IDEAS_DIR, idea.filename), note);
+  } catch (err) {
+    log.warn(`Could not append note to ${idea.filename}: ${(err as Error).message}`);
+  }
 }
 
 /**

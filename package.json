@@ -11,6 +11,7 @@
     "graduate": "ts-node scripts/graduate.ts",
     "ship": "ts-node scripts/ship.ts",
     "resume": "ts-node scripts/resume.ts",
+    "cleanup": "ts-node scripts/cleanup.ts",
     "inspect": "ts-node scripts/inspect.ts",
     "typecheck": "tsc --noEmit"
   },

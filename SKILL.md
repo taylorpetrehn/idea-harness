@@ -332,8 +332,27 @@ If a build session implements changes but doesn't reach the PR (network
 hiccup, CI agent killed, prior permission gate before bypassPermissions
 landed), the idea stays at status `building` with a `## Notes` line
 pointing to the run log. `npm run resume <slug>` re-spawns Claude in the
-repo with a different system prompt: "the branch already has uncommitted
-work, just commit/push/PR." It does not re-implement.
+worktree with a different system prompt: "the branch already has
+uncommitted work, just commit/push/PR." It does not re-implement.
+
+**Worktrees, not the primary checkout:**
+
+Every build runs in a git worktree, never in the user's main checkout.
+Default location is `<repo-parent>/<repo-basename>-worktrees/<branch-flat>`.
+Three reasons:
+
+1. **Concurrency.** `npm run graduate -- --all` with two accepted ideas
+   spawns two sessions; without worktrees both would `cd` to the same
+   directory and stomp HEAD on each other's `git checkout -b`.
+2. **Working-tree isolation.** Without a worktree, an in-progress edit
+   sitting in your primary checkout could be picked up by the builder's
+   `git add` and end up in the PR. The worktree is clean by construction.
+3. **Clean recovery.** Crashes leave the worktree dirty, not the repo.
+   `npm run resume` reuses the same worktree; in-flight changes are still
+   there.
+
+Cleanup is opt-in: `npm run cleanup` shows what's eligible (worktrees of
+ideas at `shipped`); `--apply` actually removes. Nothing auto-deletes.
 
 **Modes (env: `IDEA_HARNESS_BUILDER`):**
 
