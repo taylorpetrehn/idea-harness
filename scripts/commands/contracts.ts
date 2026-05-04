@@ -40,6 +40,7 @@ import "./cleanup";
 import "./inspect";
 import "./doctor";
 import "./completions";
+import "./serve";
 
 export interface ContractsArgs {
   /** When true, include the envelope and event base schemas alongside verbs. */

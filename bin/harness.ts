@@ -361,31 +361,15 @@ program
     await runVerb("completions", { shell: shellRaw }, run, getFlags(program));
   });
 
-// ── serve (phase 7 lands the body) ─────────────────────────────────
+// ── serve ───────────────────────────────────────────────────────────
 program
   .command("serve")
-  .description("Run as an MCP or HTTP server")
+  .description("Run as an MCP server (stdio)")
   .option("--mcp", "MCP server over stdio")
-  .option("--http <addr>", "HTTP server bind, e.g. :7717")
+  .option("--http <addr>", "HTTP server bind (not yet implemented)")
   .action(async (opts) => {
-    const out = makeOutput("serve", getFlags(program));
-    if (opts.mcp) {
-      try {
-        const mod: any = await import("../scripts/commands/serve" as any);
-        if (mod && typeof mod.run === "function") {
-          await runVerb("serve", { mcp: true }, mod.run, getFlags(program));
-          return;
-        }
-      } catch {
-        // not implemented yet
-      }
-      out.error("BAD_INPUT", "MCP server lands in phase 7.");
-      process.exit(1);
-    }
-    out.error("BAD_INPUT", "Pass --mcp (HTTP transport not yet implemented).", {
-      hint: "Phase 7 of proposals/next-gen-cli.md.",
-    });
-    process.exit(1);
+    const { run } = await import("../scripts/commands/serve");
+    await runVerb("serve", { mcp: !!opts.mcp }, run, getFlags(program));
   });
 
 program.parseAsync(process.argv).catch((err) => {
