@@ -31,7 +31,8 @@ import * as os from "os";
 import { spawn } from "child_process";
 import { Run, writeRunArtifact } from "../lib/runs";
 import { loadProjects, ProjectConfig } from "../lib/projects";
-import { setStatusInFile, IdeaSummary, listIdeas, appendNote } from "../lib/ideas";
+import { setStatusInFile, IdeaSummary, listIdeas, appendNote, setFrontmatterField } from "../lib/ideas";
+import { atomicWriteFileSync } from "../lib/atomic";
 import { prepareWorktree } from "../lib/worktree";
 import { RunEvents } from "../lib/events";
 import { log } from "../lib/log";
@@ -351,28 +352,20 @@ function appendNoteSafe(idea: IdeaSummary, note: string): void {
 
 /**
  * After a successful build, write the PR back to the idea file.
+ *
+ * Single-writer policy: frontmatter changes go through lib/ideas.ts.
+ * The builder *only* hand-edits the body to append the ## PR section.
  */
 export function recordPrOnIdea(idea: IdeaSummary, prUrl: string): void {
   const filepath = path.join(IDEAS_DIR, idea.filename);
-  let content = fs.readFileSync(filepath, "utf8");
-
-  // Frontmatter: status → pr-open, github_pr → url.
-  content = content.replace(/^github_issue:.+$/m, (orig) =>
-    /^github_pr:/m.test(content) ? orig : `${orig}\ngithub_pr: ${prUrl}`
-  );
-  if (/^github_pr:/m.test(content)) {
-    content = content.replace(/^github_pr:.+$/m, `github_pr: ${prUrl}`);
-  }
-
-  fs.writeFileSync(filepath, content, "utf8");
+  setFrontmatterField(filepath, "github_pr", prUrl);
   setStatusInFile(filepath, "pr-open");
 
   // Body: append a ## PR section if not already present.
-  content = fs.readFileSync(filepath, "utf8");
+  const content = fs.readFileSync(filepath, "utf8");
   if (!/^## PR\s*$/m.test(content)) {
     const stamp = new Date().toISOString().slice(0, 10);
-    content = content.trimEnd() + `\n\n## PR\n\n- ${stamp}: ${prUrl}\n`;
-    fs.writeFileSync(filepath, content, "utf8");
+    atomicWriteFileSync(filepath, content.trimEnd() + `\n\n## PR\n\n- ${stamp}: ${prUrl}\n`);
   }
 }
 

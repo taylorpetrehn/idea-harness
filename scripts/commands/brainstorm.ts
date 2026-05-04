@@ -22,6 +22,7 @@ import { checkBrainstormSchema } from "../lib/schema";
 import { writeRunArtifact, finalizeRun, startRun, Run } from "../lib/runs";
 import { recordMetric } from "../lib/metrics";
 import { openRunEvents, RunEvents } from "../lib/events";
+import { acquireLock, LockHeldError } from "../lib/lock";
 
 export interface BrainstormArgs {
   idea?: string;
@@ -158,6 +159,20 @@ async function validateAndCommit(args: {
 }
 
 export async function run(args: BrainstormArgs, out: Output): Promise<void> {
+  let lock;
+  try {
+    lock = acquireLock("brainstorm");
+  } catch (err) {
+    if (err instanceof LockHeldError) {
+      out.error("LOCK_HELD", err.message, {
+        recoverable: true,
+        hint: `Wait for the other run to finish, or remove ${err.message.split('"')[1] ? '' : ''}state/brainstorm.lock if it's stale.`,
+      });
+      return;
+    }
+    throw err;
+  }
+
   const r = startRun({ trigger: "manual", flags: args });
   const events = openRunEvents(r, "brainstorm", out);
 
@@ -165,6 +180,7 @@ export async function run(args: BrainstormArgs, out: Output): Promise<void> {
     return await runImpl(args, out, r, events);
   } finally {
     events.close();
+    lock.release();
   }
 }
 

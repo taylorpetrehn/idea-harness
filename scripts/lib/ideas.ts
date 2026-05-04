@@ -9,6 +9,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { fuzzyTitleMatch } from "./text";
+import { atomicWriteFileSync } from "./atomic";
+import { appendJournal } from "./journal";
 import { log } from "./log";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
@@ -71,6 +73,7 @@ export function readIdeaFile(slug: string): string {
 
 export function setStatusInFile(filepath: string, status: IdeaStatus): void {
   let content = fs.readFileSync(filepath, "utf8");
+  const prior = content.match(/^status:\s*(.+)$/m)?.[1].trim();
   content = content.replace(/^status: .+$/m, `status: ${status}`);
   if (status === "brainstormed") {
     content = content.replace(/^brainstormed_at: .+$/m, `brainstormed_at: ${new Date().toISOString()}`);
@@ -78,7 +81,12 @@ export function setStatusInFile(filepath: string, status: IdeaStatus): void {
   if (status === "accepted" || status === "rejected" || status === "needs-more-thought") {
     content = content.replace(/^decided_at: .+$/m, `decided_at: ${new Date().toISOString()}`);
   }
-  fs.writeFileSync(filepath, content, "utf8");
+  atomicWriteFileSync(filepath, content);
+  appendJournal({
+    type: "idea.status",
+    slug: path.basename(filepath, ".md"),
+    data: { from: prior, to: status },
+  });
 }
 
 export function setStatus(slugOrTitle: string, status: IdeaStatus, note?: string): void {
@@ -104,7 +112,7 @@ export function appendNote(filepath: string, note: string): void {
       `\n## Notes\n\n${dated}\n\n## Brainstorm`
     );
   }
-  fs.writeFileSync(filepath, content, "utf8");
+  atomicWriteFileSync(filepath, content);
 }
 
 export function incrementLoopCount(slug: string): number {
@@ -115,8 +123,35 @@ export function incrementLoopCount(slug: string): number {
   const current = match ? parseInt(match[1], 10) : 0;
   const next = current + 1;
   content = content.replace(/^loop_count:\s*\d+$/m, `loop_count: ${next}`);
-  fs.writeFileSync(filepath, content, "utf8");
+  atomicWriteFileSync(filepath, content);
+  appendJournal({ type: "idea.loop_count", slug: path.basename(filepath, ".md"), data: { from: current, to: next } });
   return next;
+}
+
+/**
+ * Single-writer for individual frontmatter fields. Rather than have
+ * builder.ts hand-roll regex updates of `github_pr`, every caller goes
+ * through here so we have one place that knows the file layout.
+ */
+export function setFrontmatterField(slugOrPath: string, key: string, value: string): void {
+  const filepath = slugOrPath.endsWith(".md") && fs.existsSync(slugOrPath)
+    ? slugOrPath
+    : resolveFilepath(slugOrPath);
+  if (!filepath) throw new Error(`Idea not found: ${slugOrPath}`);
+  let content = fs.readFileSync(filepath, "utf8");
+  const line = `${key}: ${value}`;
+  if (new RegExp(`^${key}:`, "m").test(content)) {
+    content = content.replace(new RegExp(`^${key}:.+$`, "m"), line);
+  } else {
+    // Insert just before the closing `---` of the frontmatter.
+    content = content.replace(/^---\n([\s\S]*?)\n---/, (_, fm) => `---\n${fm}\n${line}\n---`);
+  }
+  atomicWriteFileSync(filepath, content);
+  appendJournal({
+    type: "idea.frontmatter",
+    slug: path.basename(filepath, ".md"),
+    data: { key, value },
+  });
 }
 
 // ── Internal ──────────────────────────────────────────────────────────
