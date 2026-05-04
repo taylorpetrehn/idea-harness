@@ -3,14 +3,8 @@
  *
  * `harness capture` — add a new idea to the harness.
  *
- * Sources (selected with --from):
- *   reminders  Apple Reminders "App Ideas" list (default on macOS)
- *   stdin      pipe in plain text or JSON {title, notes?, project?}
- *   issue      gh issue view <url> (NOT YET — phase 5)
- *   text       inline text from positional args
- *
- * Capture writes a `status: raw` idea file. The next `harness brainstorm`
- * run picks it up. Capture does NOT spawn LLMs — it's pure ingestion.
+ * Sources are pluggable; see scripts/lib/sources/. Selected with --from
+ * (default: text if positional args are given, otherwise reminders).
  */
 
 import * as fs from "fs";
@@ -20,14 +14,14 @@ import { z } from "zod";
 import { Output } from "../lib/output";
 import { registerVerb } from "../lib/contracts";
 import { slugify } from "../lib/text";
-import { listReminders, completeReminder } from "../lib/reminders";
 import { resolveProject } from "../lib/projects";
+import { getSource, listSources, RawCapture } from "../lib/sources";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
 
 export interface CaptureArgs {
   text?: string[];
-  from?: "reminders" | "stdin" | "issue" | "text";
+  from?: string;
   project?: string;
 }
 
@@ -51,103 +45,22 @@ registerVerb({
   data: CaptureData,
 });
 
-interface RawCapture {
-  title: string;
-  notes?: string;
-  project?: string;
-  reminder_id?: string;
-}
-
 function newId(): string {
   return crypto.randomBytes(4).toString("hex");
 }
 
-async function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => { data += chunk; });
-    process.stdin.on("end", () => resolve(data));
-  });
-}
-
-async function gather(args: CaptureArgs, out: Output): Promise<RawCapture[]> {
-  const source = args.from ?? (args.text && args.text.length > 0 ? "text" : "reminders");
-
-  switch (source) {
-    case "text": {
-      const title = (args.text ?? []).join(" ").trim();
-      if (!title) {
-        out.error("BAD_INPUT", "No text provided.", {
-          hint: 'Usage: `harness capture "your idea here"` or pipe via --from stdin.',
-        });
-        return [];
-      }
-      return [{ title, project: args.project }];
-    }
-
-    case "stdin": {
-      const raw = (await readStdin()).trim();
-      if (!raw) {
-        out.error("BAD_INPUT", "stdin was empty.");
-        return [];
-      }
-      // Accept either a JSON {title, notes?, project?} or plain text (one
-      // idea per line).
-      try {
-        const parsed = JSON.parse(raw);
-        const arr: any[] = Array.isArray(parsed) ? parsed : [parsed];
-        return arr
-          .map((p): RawCapture => ({
-            title: String(p.title ?? "").trim(),
-            notes: p.notes ?? undefined,
-            project: p.project ?? args.project,
-          }))
-          .filter((c) => !!c.title);
-      } catch {
-        return raw
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .map((title) => ({ title, project: args.project }));
-      }
-    }
-
-    case "reminders": {
-      const reminders = await listReminders();
-      return reminders.map((r) => ({
-        title: r.title,
-        notes: r.notes ?? undefined,
-        reminder_id: r.id,
-        project: args.project,
-      }));
-    }
-
-    case "issue":
-      out.error("BAD_INPUT", "`--from issue` lands in phase 5.", {
-        hint: "Workaround: copy the issue title and use `harness capture <text>`.",
-      });
-      return [];
-
-    default:
-      out.error("BAD_INPUT", `Unknown --from source "${source}".`, {
-        hint: "Valid sources: reminders | stdin | issue | text",
-      });
-      return [];
-  }
-}
-
-function writeIdea(c: RawCapture): z.infer<typeof CapturedIdea> {
+function writeIdea(c: RawCapture, defaultSource: string): z.infer<typeof CapturedIdea> {
   const id = newId();
   const slug = `${slugify(c.title)}-${id.slice(0, 4)}`;
   const filepath = path.join(IDEAS_DIR, `${slug}.md`);
   const project = c.project ?? resolveProject(c.title, c.notes ?? "") ?? "letsbarker";
+  const sourceLabel = c.external_id ? defaultSource : defaultSource === "reminders" ? "reminders" : "capture";
 
   const content = `---
 id: ${id}
 title: "${c.title.replace(/"/g, '\\"')}"
 status: raw
-source: ${c.reminder_id ? "reminders" : "capture"}
+source: ${sourceLabel}
 project: ${project}
 captured_at: ${new Date().toISOString()}
 brainstormed_at: ~
@@ -173,19 +86,60 @@ ${c.notes ? "\n## Notes\n\n" + c.notes + "\n" : ""}
 }
 
 export async function run(args: CaptureArgs, out: Output): Promise<void> {
-  const items = await gather(args, out);
-  if (out.settled) return;
+  const explicitText = (args.text ?? []).join(" ").trim();
+  const sourceId = args.from ?? (explicitText ? "text" : "reminders");
+  const source = getSource(sourceId);
+
+  if (!source) {
+    const available = listSources()
+      .filter((s) => s.available())
+      .map((s) => s.id)
+      .join(" | ");
+    out.error("BAD_INPUT", `Unknown source "${sourceId}".`, {
+      hint: `Available: ${available || "(none)"}`,
+    });
+    return;
+  }
+
+  if (!source.available()) {
+    out.error("ENV_MISSING", `Source "${sourceId}" is not available in this environment.`, {
+      hint: sourceId === "reminders"
+        ? "Reminders requires macOS (and System Settings → Privacy → Automation access)."
+        : "Check the source's prerequisites.",
+    });
+    return;
+  }
+
+  let items: RawCapture[];
+  try {
+    items = await source.fetch({ project: args.project, raw: explicitText || undefined });
+  } catch (err) {
+    out.error("BAD_INPUT", (err as Error).message, {
+      hint: "Run `harness doctor` to check the source's environment.",
+    });
+    return;
+  }
+
+  if (items.length === 0) {
+    out.result(
+      { source: source.id, captured: [], count: 0 },
+      sourceId === "reminders"
+        ? "Reminders list empty."
+        : "Nothing to capture from that source."
+    );
+    return;
+  }
 
   const captured: z.infer<typeof CapturedIdea>[] = [];
   for (const c of items) {
-    const rec = writeIdea(c);
+    const rec = writeIdea(c, source.id);
     captured.push(rec);
-    out.event("capture.created", { slug: rec.slug, project: rec.project });
-    if (c.reminder_id) {
+    out.event("capture.created", { slug: rec.slug, project: rec.project, source: source.id });
+    if (source.acknowledge) {
       try {
-        await completeReminder(c.reminder_id);
+        await source.acknowledge(c);
       } catch (err) {
-        out.warn(`Could not mark reminder complete: ${(err as Error).message}`);
+        out.warn(`Source acknowledge failed for "${c.title}": ${(err as Error).message}`);
       }
     }
     if (out.mode === "pretty") {
@@ -193,16 +147,8 @@ export async function run(args: CaptureArgs, out: Output): Promise<void> {
     }
   }
 
-  if (captured.length === 0) {
-    out.result(
-      { source: args.from ?? "auto", captured: [], count: 0 },
-      "Nothing to capture. Add a text arg, pipe stdin, or fill the Reminders list."
-    );
-    return;
-  }
-
   out.result(
-    { source: args.from ?? "auto", captured, count: captured.length },
+    { source: source.id, captured, count: captured.length },
     "Next: `harness brainstorm` to process the new idea(s)."
   );
 }
