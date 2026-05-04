@@ -51,6 +51,13 @@ export interface BuildResult {
 export interface BuildOptions {
   /** Override the variant choice. Falls back to **If accepted, build:** in the brainstorm. */
   variant?: string;
+  /**
+   * "build" (default) → fresh implementation from the brainstorm.
+   * "resume"          → branch already exists with uncommitted/unpushed work; just
+   *                     commit/push/PR. Used when a prior session ran but couldn't
+   *                     reach the commit step (e.g. a permission gate, a network blip).
+   */
+  intent?: "build" | "resume";
 }
 
 type Mode = "live" | "offline" | "dry";
@@ -69,7 +76,7 @@ function expandHome(p: string): string {
 
 const CLI_TIMEOUT_MS = parseInt(process.env.IDEA_HARNESS_BUILDER_TIMEOUT_MS ?? "1800000", 10); // 30 min default
 
-const SYSTEM_PROMPT = `You are Claude Code, invoked by the LetsBarker idea-harness to turn an accepted idea into a real pull request.
+const BUILD_SYSTEM_PROMPT = `You are Claude Code, invoked by the LetsBarker idea-harness to turn an accepted idea into a real pull request.
 
 Your job in this session, in order:
 1. Read the brainstorm in the user message — it is your spec. Identify the chosen variant (from the BUILD_VARIANT directive or the **If accepted, build:** line).
@@ -77,7 +84,7 @@ Your job in this session, in order:
 3. Create the feature branch named in BRANCH_NAME, branched from BASE_BRANCH.
 4. Implement the chosen variant. Stay narrowly scoped — do not refactor surrounding code.
 5. Run the project's test command (check package.json / Gemfile for the convention). Fix any tests you broke.
-6. Commit the changes on the feature branch with a message that references the idea.
+6. Commit the changes on the feature branch with a message that references the idea slug.
 7. Push the branch to origin.
 8. Open a PR with \`gh pr create --base BASE_BRANCH --head BRANCH_NAME --title "<short title>" --body "<body>"\`. The body should reference the idea slug and include the brainstorm's "Why" sentence.
 9. As the LAST line of your response — and nothing else after it — print: PR_URL=<the URL gh returned>
@@ -86,10 +93,33 @@ Constraints:
 - Never push to main, master, preview, or any branch other than BRANCH_NAME.
 - Never merge the PR. The PR is the human gate.
 - Never use --no-verify or --no-gpg-sign.
+- The harness invokes you with --permission-mode bypassPermissions specifically so you can run git and gh without per-command approval. Stay within the constraints above; the permission removal is for ergonomics, not for taking risks.
 - If a step fails (test failure, push rejected, gh error), STOP and explain in plain text. Do NOT print PR_URL=. The harness treats absence of PR_URL= as a failure.
 - If the brainstorm references a file/path that doesn't exist, treat the brainstorm as a hint, not gospel — verify before you edit.
 
 Output format: prose is fine for steps 1-8 (you can think out loud, run commands, narrate). The LAST line MUST be PR_URL=<url> on success or a single sentence explaining why you stopped on failure.`;
+
+const RESUME_SYSTEM_PROMPT = `You are Claude Code, recovering an in-flight build for the LetsBarker idea-harness.
+
+A previous session implemented the changes but couldn't complete the commit/push/PR step. Your only job is to land the existing work.
+
+Your job in this session, in order:
+1. Confirm you are on the branch named in BRANCH_NAME. \`git status\` should show uncommitted changes (or staged/committed-but-unpushed work).
+2. If there are uncommitted changes, review them with \`git diff\` to confirm they match the BUILD_VARIANT in the user message. If anything looks wrong (totally unrelated edits, secrets, huge unintended diffs), STOP and explain — do NOT commit garbage just to land a PR.
+3. Stage and commit the changes with a clear message referencing the idea slug.
+4. Push the branch to origin.
+5. Open a PR with \`gh pr create --base BASE_BRANCH --head BRANCH_NAME --title "<short title>" --body "<body>"\`. The body should reference the idea slug and include the brainstorm's "Why" sentence.
+6. As the LAST line of your response — and nothing else after it — print: PR_URL=<the URL gh returned>
+
+Constraints:
+- Do NOT make new feature changes. The build is done; you are just landing it.
+- Never push to main, master, preview, or any branch other than BRANCH_NAME.
+- Never merge the PR. The PR is the human gate.
+- Never use --no-verify or --no-gpg-sign.
+- If a PR already exists for BRANCH_NAME (\`gh pr view BRANCH_NAME\` returns one), print its URL as PR_URL= and stop — don't open a duplicate.
+- The harness invokes you with --permission-mode bypassPermissions so git and gh just work.
+
+Output format: prose is fine for the steps. The LAST line MUST be PR_URL=<url> on success or a single sentence explaining why you stopped on failure.`;
 
 export async function build(
   idea: IdeaSummary,
@@ -97,6 +127,8 @@ export async function build(
   opts: BuildOptions = {}
 ): Promise<BuildResult> {
   const start = Date.now();
+  const intent = opts.intent ?? "build";
+  const systemPrompt = intent === "resume" ? RESUME_SYSTEM_PROMPT : BUILD_SYSTEM_PROMPT;
 
   const project = resolveProjectConfig(idea.project);
   const repoPath = expandHome(project.local_path);
@@ -109,30 +141,27 @@ export async function build(
   const variant = opts.variant ?? extractVariant(readIdeaBody(idea)) ?? "simplest version";
   const brainstormBody = extractBrainstormBody(readIdeaBody(idea));
 
-  const userPrompt = buildUserPrompt({
-    idea,
-    project,
-    brainstorm: brainstormBody,
-    branch,
-    baseBranch,
-    variant,
-  });
+  const userPrompt =
+    intent === "resume"
+      ? buildResumePrompt({ idea, project, brainstorm: brainstormBody, branch, baseBranch, variant })
+      : buildUserPrompt({ idea, project, brainstorm: brainstormBody, branch, baseBranch, variant });
 
   const m = mode();
   if (m === "dry") {
-    log.info(`Builder dry mode for ${idea.slug}:`);
+    log.info(`Builder dry mode (${intent}) for ${idea.slug}:`);
     log.info(`  repo: ${repoPath}`);
     log.info(`  branch: ${branch} (base: ${baseBranch})`);
     log.info(`  variant: ${variant}`);
     log.info(`  prompt length: ${userPrompt.length} chars`);
     writeRunArtifact(run, `build-${idea.slug}.json`, {
       slug: idea.slug,
+      intent,
       mode: m,
       repoPath,
       branch,
       baseBranch,
       variant,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt,
       userPrompt,
     });
     return {
@@ -150,9 +179,10 @@ export async function build(
 
   if (m === "offline") {
     const fakeUrl = `https://github.com/${project.github_repo}/pull/0`;
-    log.info(`Builder offline mode for ${idea.slug} → fake PR ${fakeUrl}`);
+    log.info(`Builder offline mode (${intent}) for ${idea.slug} → fake PR ${fakeUrl}`);
     writeRunArtifact(run, `build-${idea.slug}.json`, {
       slug: idea.slug,
+      intent,
       mode: m,
       repoPath,
       branch,
@@ -174,14 +204,24 @@ export async function build(
   }
 
   // ── Live mode: spawn claude in the repo ──────────────────────────────
-  log.info(`Building ${idea.slug} in ${repoPath} on branch ${branch}…`);
-  const result = await spawnClaude({ cwd: repoPath, userPrompt });
+  const logPath = path.join(run.dir, `build-${idea.slug}.log`);
+  const verb = intent === "resume" ? "Resuming" : "Building";
+  log.info(`${verb} ${idea.slug} in ${repoPath} on branch ${branch}…`);
+  log.info(`  Live output: tail -f ${logPath}`);
+
+  const result = await spawnClaude({
+    cwd: repoPath,
+    userPrompt,
+    systemPrompt,
+    logPath,
+  });
 
   const prUrl = parsePrUrl(result.stdout);
   const status: BuildResult["status"] = prUrl ? "pr-open" : "failed";
 
   writeRunArtifact(run, `build-${idea.slug}.json`, {
     slug: idea.slug,
+    intent,
     mode: m,
     repoPath,
     branch,
@@ -192,7 +232,8 @@ export async function build(
     durationMs: Date.now() - start,
     stdout: result.stdout,
     stderr: result.stderr,
-    systemPrompt: SYSTEM_PROMPT,
+    logPath,
+    systemPrompt,
     userPrompt,
   });
 
@@ -319,13 +360,58 @@ ${brainstorm}
 Implement BUILD_VARIANT on BRANCH_NAME, branched from BASE_BRANCH. Open a PR against BASE_BRANCH. Output PR_URL=<url> as your final line on success. Stop without printing PR_URL= on failure.`;
 }
 
+function buildResumePrompt(args: {
+  idea: IdeaSummary;
+  project: ProjectConfig;
+  brainstorm: string;
+  branch: string;
+  baseBranch: string;
+  variant: string;
+}): string {
+  const { idea, project, brainstorm, branch, baseBranch, variant } = args;
+  return `# Resume directive
+
+A previous session implemented this idea on the named branch but couldn't finish the commit/push/PR step. Your only job is to land it.
+
+REPO: ${project.github_repo}
+PROJECT_KEY: ${project.key}
+BRANCH_NAME: ${branch}
+BASE_BRANCH: ${baseBranch}
+BUILD_VARIANT: ${variant}
+IDEA_SLUG: ${idea.slug}
+IDEA_ID: ${idea.id}
+
+## Idea title
+${idea.title}
+
+## Brainstorm (the spec the prior session worked from — for reference, not re-implementation)
+
+${brainstorm}
+
+---
+
+Confirm BRANCH_NAME exists with relevant uncommitted/staged work. Verify the diff matches BUILD_VARIANT. Commit, push, open a PR. Output PR_URL=<url> as your final line on success.`;
+}
+
 function parsePrUrl(stdout: string): string | null {
-  // Look for the LAST PR_URL= line (most reliable: last instruction Claude
-  // emitted). Tolerate trailing whitespace/punctuation.
-  const matches = stdout.match(/PR_URL=(\S+)/g);
-  if (!matches || matches.length === 0) return null;
-  const last = matches[matches.length - 1];
-  return last.replace(/^PR_URL=/, "").replace(/[.,;)\]]+$/, "") || null;
+  // Preferred: the explicit sentinel. Take the last occurrence so the final
+  // emission wins (the model is instructed to print this as the LAST line).
+  const sentinelMatches = stdout.match(/PR_URL=(\S+)/g);
+  if (sentinelMatches && sentinelMatches.length > 0) {
+    const last = sentinelMatches[sentinelMatches.length - 1];
+    const url = last.replace(/^PR_URL=/, "").replace(/[.,;)\]]+$/, "");
+    if (url) return url;
+  }
+
+  // Belt-and-suspenders: if the model didn't follow the sentinel format but
+  // a PR was actually opened, the URL almost certainly appears in stdout.
+  // Take the LAST github.com .../pull/<number> we see.
+  const urlMatches = stdout.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g);
+  if (urlMatches && urlMatches.length > 0) {
+    return urlMatches[urlMatches.length - 1];
+  }
+
+  return null;
 }
 
 function tail(s: string, n: number): string {
@@ -342,19 +428,40 @@ interface SpawnResult {
   exitCode: number;
 }
 
-async function spawnClaude(args: { cwd: string; userPrompt: string }): Promise<SpawnResult> {
+async function spawnClaude(args: {
+  cwd: string;
+  userPrompt: string;
+  systemPrompt: string;
+  logPath: string;
+}): Promise<SpawnResult> {
   const bin = claudeBin();
-  // We deliberately do NOT pass --output-format json here — the build session
-  // is long-running and may stream tool calls; we want plain prose with the
-  // PR_URL= sentinel on the last line. Token counts are not load-bearing
-  // for the build path.
+
+  // bypassPermissions: the builder needs git + gh to run without per-command
+  // approval (the dm-cohorts-d2e3 run failed with acceptEdits because Bash(git
+  // commit), Bash(git push), Bash(gh pr create) were all gated by the target
+  // repo's settings.local.json allow-list). Risk is bounded by the system
+  // prompt: branch name pinned, no merging, no force-push.
+  //
+  // Plain prose output with a PR_URL= sentinel on the last line — we don't
+  // ask for --output-format stream-json because we want a session that's
+  // tail -f-able by the user during a long build.
   const cliArgs = [
     "--print",
     "--system-prompt",
-    SYSTEM_PROMPT,
+    args.systemPrompt,
     "--permission-mode",
-    "acceptEdits",
+    "bypassPermissions",
   ];
+
+  // Write a header into the log so a follower knows what they're looking at.
+  const logStream = fs.createWriteStream(args.logPath, { flags: "w" });
+  logStream.write(
+    `# idea-harness builder session\n` +
+      `# cwd: ${args.cwd}\n` +
+      `# started: ${new Date().toISOString()}\n` +
+      `# bin: ${bin} ${cliArgs.join(" ")}\n` +
+      `# ---\n`
+  );
 
   return await new Promise((resolve, reject) => {
     const child = spawn(bin, cliArgs, {
@@ -366,38 +473,36 @@ async function spawnClaude(args: { cwd: string; userPrompt: string }): Promise<S
     let stderr = "";
     let settled = false;
 
-    const timer = setTimeout(() => {
+    const finish = (result: SpawnResult | null, err?: Error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
+      logStream.end(() => {
+        if (err) reject(err);
+        else if (result) resolve(result);
+      });
+    };
+
+    const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error(`Builder claude session timed out after ${CLI_TIMEOUT_MS}ms`));
+      finish(null, new Error(`Builder claude session timed out after ${CLI_TIMEOUT_MS}ms`));
     }, CLI_TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
       const s = chunk.toString("utf8");
       stdout += s;
-      // Stream live output to stderr so a watcher can follow progress.
+      logStream.write(s);
       process.stderr.write(s);
     });
     child.stderr.on("data", (chunk) => {
       const s = chunk.toString("utf8");
       stderr += s;
+      logStream.write(s);
       process.stderr.write(s);
     });
 
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: code ?? -1 });
-    });
+    child.on("error", (err) => finish(null, new Error(`Failed to spawn claude: ${err.message}`)));
+    child.on("close", (code) => finish({ stdout, stderr, exitCode: code ?? -1 }));
 
     child.stdin.write(args.userPrompt);
     child.stdin.end();

@@ -12,19 +12,24 @@
  *   npm run graduate <slug> --variant=v2   # override the chosen variant
  *   npm run graduate <slug> --dry          # print the prompt, don't spawn
  *
+ * Slug matching is permissive: a unique prefix or unique substring of the
+ * full slug works (e.g. `dm-cohorts` resolves to the long capture). On
+ * ambiguity the script lists candidates and exits.
+ *
  * Status flow:
  *   accepted → building → pr-open
  *
  * On success: the idea file gets `github_pr` in frontmatter, status moves
  * to `pr-open`, and a `## PR` section is appended.
  *
- * On failure: status reverts to `accepted` so the idea stays in the queue.
+ * On failure: status stays at `building` so `npm run resume <slug>` can
+ * recover any work already on the branch.
  */
 
-import { startRun, finalizeRun, writeRunArtifact } from "./lib/runs";
-import { listIdeas, setStatus, IdeaSummary } from "./lib/ideas";
-import { recordMetric } from "./lib/metrics";
-import { build, recordPrOnIdea } from "./agents/builder";
+import { startRun, finalizeRun } from "./lib/runs";
+import { listIdeas, IdeaSummary } from "./lib/ideas";
+import { graduateOne } from "./lib/graduator";
+import { resolveIdeaShortSlug } from "./lib/slug";
 import { log } from "./lib/log";
 
 interface Flags {
@@ -45,28 +50,19 @@ function parseFlags(argv: string[]): Flags {
 }
 
 function pickIdeas(flags: Flags): IdeaSummary[] {
-  // Allow re-graduating ideas that already moved to `building` (e.g. a prior
-  // build crashed and we want to try again without manually flipping status
-  // back to accepted).
-  const eligible = [...listIdeas("accepted"), ...listIdeas("building")];
   if (flags.all) return listIdeas("accepted");
   if (flags.slugs.length === 0) {
     log.error("No slug given. Pass a slug, or --all to build every accepted idea.");
+    log.error("Tip: `npm run ship` picks the next eligible idea automatically.");
     process.exit(2);
   }
+  // Eligible: accepted (fresh build) or building (retry — graduator decides
+  // whether to revert; today it stays `building` and the retry works).
+  const eligible = [...listIdeas("accepted"), ...listIdeas("building")];
   const picked: IdeaSummary[] = [];
   for (const slug of flags.slugs) {
-    const match = eligible.find((i) => i.slug === slug || i.slug.startsWith(slug));
-    if (!match) {
-      log.error(`No accepted/building idea matches "${slug}".`);
-      log.error(
-        `Accepted: ${listIdeas("accepted").map((i) => i.slug).join(", ") || "(none)"}`
-      );
-      log.error(
-        `Building: ${listIdeas("building").map((i) => i.slug).join(", ") || "(none)"}`
-      );
-      process.exit(2);
-    }
+    const match = resolveIdeaShortSlug(slug, eligible);
+    if (!match) process.exit(2);
     picked.push(match);
   }
   return picked;
@@ -74,9 +70,6 @@ function pickIdeas(flags: Flags): IdeaSummary[] {
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
-  if (flags.dry) {
-    process.env.IDEA_HARNESS_BUILDER = "dry";
-  }
 
   const ideas = pickIdeas(flags);
   if (ideas.length === 0) {
@@ -89,47 +82,13 @@ async function main() {
   let failed = 0;
 
   for (const idea of ideas) {
-    log.info(`Graduating ${idea.slug}…`);
-    // Don't flip status in dry mode — the user is just inspecting the prompt.
-    // In live/offline modes, we move to `building` so concurrent `npm run waiting`
-    // callers see the in-flight work.
-    if (!flags.dry) {
-      setStatus(idea.slug, "building");
-      recordMetric("build.started", 1);
-    }
-
-    try {
-      const result = await build(idea, run, { variant: flags.variant });
-
-      if (result.status === "pr-open" && result.pr_url) {
-        recordPrOnIdea(idea, result.pr_url);
-        log.info(`✓ ${idea.slug} → ${result.pr_url}`);
-        recordMetric("build.pr_open", 1);
-        succeeded++;
-      } else if (result.status === "dry") {
-        // Dry mode keeps status at building so the user can re-run live;
-        // alternatively, undo by calling `npm run review set <slug> accepted`.
-        log.info(`(dry) ${idea.slug} prompt prepared.`);
-        succeeded++;
-      } else {
-        log.error(`✗ ${idea.slug} build failed (exit ${result.exitCode}).`);
-        log.error(`  stdout tail:\n${result.stdoutTail}`);
-        log.error(`  stderr tail:\n${result.stderrTail}`);
-        setStatus(idea.slug, "accepted", `Build failed at ${new Date().toISOString()} — see runs/${run.id}/build-${idea.slug}.json`);
-        recordMetric("build.failed", 1);
-        failed++;
-      }
-    } catch (err) {
-      log.error(`✗ ${idea.slug} crashed:`, err);
-      writeRunArtifact(run, `build-${idea.slug}.error.json`, {
-        slug: idea.slug,
-        error: (err as Error).message,
-        stack: (err as Error).stack,
-      });
-      setStatus(idea.slug, "accepted", `Build crashed: ${(err as Error).message}`);
-      recordMetric("build.crashed", 1);
-      failed++;
-    }
+    const outcome = await graduateOne(idea, run, {
+      intent: "build",
+      variant: flags.variant,
+      dry: flags.dry,
+    });
+    if (outcome === "passed" || outcome === "dry") succeeded++;
+    else failed++;
   }
 
   finalizeRun(run, {

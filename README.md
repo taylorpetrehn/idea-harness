@@ -31,17 +31,25 @@ npm run garden
 #    Or hit the CLI directly:
 npm run waiting
 
-# 5. Accept one
-npm run review accept <slug>
+# 5. Ship the next eligible idea — no slug needed.
+#    Picks the newest accepted (or auto-accepts a brainstormed one),
+#    or resumes a `building` idea whose previous session didn't reach PR.
+npm run ship
 
-# 6. Graduate it to a real PR. Spawns Claude Code in the target repo,
-#    plans/implements/tests, pushes a branch, opens a PR.
-npm run graduate <slug>
-# (or `--dry` to preview the prompt, `--all` to graduate every accepted idea)
+# Equivalent step-by-step if you want explicit control:
+npm run review accept <slug>     # mark accepted
+npm run graduate <slug>          # spawn Claude in target repo, open PR
+npm run resume <slug>            # recover a stuck `building` idea
 
-# 7. Track in-flight work
+# Slugs accept a unique prefix or substring, so `npm run resume dm-cohorts`
+# resolves to the long capture as long as it's unambiguous.
+
+# 6. Track in-flight work
 npm run review in-flight    # shows accepted / building / pr-open
 npm run inspect             # rolling metrics + last-run summary
+
+# 7. Build sessions stream live to runs/<id>/build-<slug>.log.
+#    The path is printed when graduate/ship/resume starts — `tail -f` it.
 ```
 
 > `context/product.md` and `context/decisions.md` are gitignored on purpose —

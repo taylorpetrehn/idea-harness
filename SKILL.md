@@ -315,6 +315,26 @@ Implemented in `scripts/agents/builder.ts` and orchestrated by
 - It does not push to base branches (preview/main). The system prompt
   forbids any branch other than the one in BRANCH_NAME.
 
+**Permission posture:**
+
+The builder spawns `claude --permission-mode bypassPermissions`. This is
+deliberate: a fresh build needs `git add`, `git commit`, `git push`, and
+`gh pr create` to run without per-command approval, and the target repo's
+`.claude/settings.local.json` allow-list is unlikely to include those. We
+bypass the permission gate and rely on the system prompt's branch-pinned
+constraints + no-merge + no-force-push rules to bound risk. (This is how
+the dm-cohorts-d2e3 build got blocked the first time — `acceptEdits` lets
+edits through but still gates Bash; that's the wrong shape for this job.)
+
+**Recovery: `npm run resume`:**
+
+If a build session implements changes but doesn't reach the PR (network
+hiccup, CI agent killed, prior permission gate before bypassPermissions
+landed), the idea stays at status `building` with a `## Notes` line
+pointing to the run log. `npm run resume <slug>` re-spawns Claude in the
+repo with a different system prompt: "the branch already has uncommitted
+work, just commit/push/PR." It does not re-implement.
+
 **Modes (env: `IDEA_HARNESS_BUILDER`):**
 
 - `live` (default) — spawn Claude in the repo and actually build.
@@ -379,11 +399,19 @@ npm run review reject <slug> [note]
 npm run review thought <slug> [note]
 npm run review in-flight                  # accepted / building / pr-open
 
-# Graduate an accepted idea to a real PR
-npm run graduate <slug>                   # spawns claude in target repo
+# Ship the next eligible idea (no slug needed)
+npm run ship                              # picks newest accepted, or auto-accepts brainstormed
+npm run ship <slug>                       # explicit
+npm run ship -- --yes                     # don't prompt for auto-accept confirmation
+
+# Or step-by-step
+npm run graduate <slug>                   # accepted → PR (fresh build)
 npm run graduate <slug> --variant=v2      # override variant choice
 npm run graduate <slug> --dry             # preview the build prompt
 npm run graduate -- --all                 # graduate every accepted idea
+npm run resume <slug>                     # recover a `building` idea whose session died
+
+# Slugs accept unique prefix or substring (`dm-cohorts` is fine).
 
 # Inspect run history + metrics
 npm run inspect
