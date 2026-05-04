@@ -59,6 +59,28 @@ function nextWaiting() {
   ));
 }
 
+function inFlight() {
+  const accepted = listIdeas("accepted");
+  const building = listIdeas("building");
+  const open = listIdeas("pr-open");
+  if (accepted.length + building.length + open.length === 0) {
+    console.log("Nothing in flight.");
+    return;
+  }
+  if (accepted.length) {
+    console.log(`\nAccepted, awaiting graduate (${accepted.length}):`);
+    for (const i of accepted) console.log(`  ${i.slug}  →  ${i.title}`);
+  }
+  if (building.length) {
+    console.log(`\nBuilding (${building.length}):`);
+    for (const i of building) console.log(`  ${i.slug}  →  ${i.title}`);
+  }
+  if (open.length) {
+    console.log(`\nPRs open (${open.length}):`);
+    for (const i of open) console.log(`  ${i.slug}  →  ${i.github_pr || "(no url)"}`);
+  }
+}
+
 function listWaiting() {
   const waiting = listIdeas("brainstormed").concat(listIdeas("needs-critic-review"));
   if (waiting.length === 0) {
@@ -81,6 +103,7 @@ function listWaiting() {
 
 if (command === "next") nextWaiting();
 else if (command === "list") listWaiting();
+else if (command === "in-flight") inFlight();
 else if (command === "show") {
   console.log(readIdeaFile(args[0]));
 } else if (command === "accept") {
@@ -90,6 +113,7 @@ else if (command === "show") {
   resetLoopCount(slug);
   recordMetric("decision.accept", 1);
   console.log(`✓ ${slug} → accepted`);
+  console.log(`  Next: \`npm run graduate ${slug}\` to spawn the build session.`);
 } else if (command === "reject") {
   const [slug, ...noteParts] = args;
   if (!slug) usageAndExit();
@@ -127,8 +151,9 @@ function usageAndExit(): never {
   console.log(`Usage:
   review next                    JSON for the next idea to review
   review list                    list all waiting ideas
+  review in-flight               list accepted / building / pr-open ideas
   review show <slug>             full file contents
-  review accept <slug> [note]    mark accepted
+  review accept <slug> [note]    mark accepted (then run \`npm run graduate <slug>\`)
   review reject <slug> [note]    mark rejected
   review thought <slug> [note]   mark needs-more-thought, ++loop_count
   review set <slug> <status>     set arbitrary status (advanced)`);

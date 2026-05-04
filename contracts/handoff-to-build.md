@@ -1,7 +1,11 @@
-# Contract: Handoff to Build Pipeline
+# Contract: Handoff to the Builder (L6)
 
-Defines what an `accepted` idea must contain before the `idea-to-pr` skill
-picks it up.
+Defines what an `accepted` idea must contain before `npm run graduate <slug>`
+will hand it off to the builder.
+
+The builder spawns a Claude Code session inside the target repo's working
+directory. The brainstorm body is the only spec — there is no separate
+specifier agent. Whatever the brainstorm says is what gets built.
 
 ---
 
@@ -12,41 +16,48 @@ id: <8-char hex>
 title: "<title>"
 status: accepted
 source: reminders | conversation | feedback | coding
-project: <key from references/projects.yml>   # MUST resolve
+project: <key from references/projects.yml>   # MUST resolve to a project with local_path
 captured_at: <ISO 8601>
 brainstormed_at: <ISO 8601>                    # MUST be set
 decided_at: <ISO 8601>                         # MUST be set
+github_pr: ~                                   # populated by the builder on success
 ```
 
-If any required field is missing, `idea-to-pr` skips the idea and posts a
-note: "Idea {slug} marked accepted but missing fields: …". Status reverts
-to `brainstormed` for re-review.
+If any required field is missing, `npm run graduate` exits non-zero and
+prints which fields are missing. Status reverts to `brainstormed` so it
+re-surfaces in the review queue.
 
 ---
 
 ## Required Body Fields
 
 The brainstorm must contain:
-- All sections from `brainstorm-output.md`
-- A clear `**If accepted, build:**` line specifying which version
 
-If Taylor accepted a non-default variant during conversational review, that
+- All sections from `brainstorm-output.md` (the schema check enforces this).
+- A clear `**If accepted, build:**` line specifying which version (the
+  builder reads this as the default `BUILD_VARIANT`).
+
+If Taylor accepted a non-default variant during conversational review, the
 choice is appended to the `## Notes` section as:
 
 ```
 > 2026-05-03: Taylor accepted variant 2 (email nudge approach)
 ```
 
-`idea-to-pr` reads the most recent variant note as the chosen scope.
+The builder reads the most recent `variant N` / `simplest version` line in
+`## Notes` and overrides the default with that choice. Pass
+`--variant=<text>` to the graduate CLI to override both.
 
 ---
 
 ## Project Resolution
 
 Every accepted idea must have a `project` value that exists in
-`references/projects.yml`. If the idea was harvested without a clear project
-match, the initializer flags it during planning and Taylor resolves it
-during the conversational review:
+`references/projects.yml` AND has a `local_path` that exists on disk.
+
+If the idea was harvested without a clear project match, the initializer
+flags it during planning and Taylor resolves it during conversational
+review:
 
 > "This one didn't auto-route to a project — is this a LetsBarker idea or
 > something else?"
@@ -55,45 +66,40 @@ The conversational handler updates the frontmatter on Taylor's answer.
 
 ---
 
-## What `idea-to-pr` Does
-
-The build pipeline reads `ideas/*.md` with `status: accepted` as one of its
-input sources (alongside Reminders, until Reminders is fully retired).
+## What the Builder Does
 
 For each accepted idea:
-1. Read the brainstorm — this replaces the existing "scoring" step. Verdict
-   confidence becomes the build pipeline's confidence tier.
-2. Update status: `accepted` → `building`
-3. Generate spec + brief from the brainstorm content (much higher signal
-   than from a Reminders one-liner)
-4. Create GitHub Issue with brainstorm content as the body
-5. Run the existing build/review/PR flow
-6. On PR merge: status → `shipped`
-7. On PR cancellation: status → `accepted` (re-queue for revisit)
+
+1. Resolves `project` → `projects.yml` entry → `local_path`, `github_repo`,
+   `base_branch`.
+2. Computes branch name `idea/<slug-stub>-<id4>`.
+3. Composes a build directive: brainstorm body + variant + branch + base.
+4. Sets status to `building`, then spawns `claude --print` in the repo.
+5. Claude explores the codebase, implements the chosen variant on the
+   feature branch, runs tests, commits, pushes, and runs `gh pr create`.
+6. Claude prints `PR_URL=<url>` as its final line on success. The builder
+   parses this; absence is treated as failure.
+7. On success: status → `pr-open`, `github_pr` set, `## PR` section
+   appended to the idea body.
+8. On failure: status reverts to `accepted` with a note in `## Notes`
+   pointing at the failed run artifact.
+
+The builder NEVER:
+
+- Pushes to a base branch (preview/main)
+- Merges the PR (the human gate)
+- Uses `--no-verify` or skips signing
+- Reads run logs or other ideas — it only sees the brainstorm body
 
 ---
 
 ## Confidence Mapping
 
-| Brainstorm verdict confidence | `idea-to-pr` tier |
-|---|---|
-| `high` | HIGH (auto-build) |
-| `medium` | MEDIUM (await `agent:ready` label) |
-| `low` | Should not occur — critic should have caught vague ideas |
+The builder doesn't gate on confidence. The schema + critic + Taylor's
+conversational review have already filtered for quality. Low-confidence
+ideas should rarely make it to `accepted`; if one does, the build still
+runs against the brainstorm as written.
 
-If a `low` confidence idea reaches the build pipeline, that's a critic
-failure. The build pipeline gates it to MEDIUM and logs the leak for
-critic tuning.
-
----
-
-## What Doesn't Cross the Handoff
-
-The build pipeline never reads:
-- The harness run logs (`runs/`)
-- Loop detection state
-- Critic verdicts
-- Other ideas in `ideas/`
-
-The accepted idea file is fully self-contained. This is the contract — if
-you can't build from the file alone, the brainstorm wasn't good enough.
+If you want to gate confidence at graduation time, add it to
+`scripts/graduate.ts` — it's the right place. Today the policy is "Taylor
+gates with the accept/reject decision."

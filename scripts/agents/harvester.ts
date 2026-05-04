@@ -38,6 +38,7 @@ captured_at: ${new Date().toISOString()}
 brainstormed_at: ~
 decided_at: ~
 github_issue: ~
+github_pr: ~
 loop_count: 0
 ---
 

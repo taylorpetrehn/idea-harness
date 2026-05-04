@@ -29,6 +29,30 @@ import { log } from "../lib/log";
 import { BUDGETS } from "../lib/budgets";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
+const CONTRACTS_DIR = path.join(__dirname, "..", "..", "contracts");
+const REFERENCES_DIR = path.join(__dirname, "..", "..", "references");
+
+// Read once at module load — the contract files are part of the deploy and
+// don't change mid-run. Re-reading per call would just risk drift if a file
+// is being edited while a long run is in flight.
+const BRAINSTORM_CONTRACT = readFileOrThrow(path.join(CONTRACTS_DIR, "brainstorm-output.md"));
+const IDEA_SCHEMA_REFERENCE = readFileOrThrow(path.join(REFERENCES_DIR, "idea-schema.md"));
+const WORKED_EXAMPLE = extractWorkedExample(IDEA_SCHEMA_REFERENCE);
+
+function readFileOrThrow(p: string): string {
+  if (!fs.existsSync(p)) throw new Error(`Required harness file missing: ${p}`);
+  return fs.readFileSync(p, "utf8");
+}
+
+/**
+ * Pull the "Worked Example" markdown block out of references/idea-schema.md.
+ * The reference doc owns the canonical example; we don't want to duplicate
+ * it in the prompt and let it drift.
+ */
+function extractWorkedExample(ref: string): string {
+  const m = ref.match(/## Worked Example\s*\n+```markdown\n([\s\S]*?)\n```/);
+  return m ? m[1].trim() : "";
+}
 
 export interface BrainstormResult {
   slug: string;
@@ -282,10 +306,18 @@ function buildPrompt(opts: {
 job is to evaluate this idea honestly and help Taylor decide whether to build
 it. You are not an enthusiast — you are an evaluator.
 
-Your output MUST follow the contract in contracts/brainstorm-output.md.
-The critic will reject vague, sycophantic, or schema-violating output.
+Your output MUST conform exactly to the contract below. A deterministic
+schema check runs before the critic and will reject any drift in section
+names, ordering, or verdict-line format. After that the critic checks
+quality. Both must pass for the brainstorm to reach Taylor.
 
-${revisionFeedback ? `\n## REVISION REQUESTED\n\nThe critic returned the following feedback on your previous attempt:\n\n${revisionFeedback}\n\nFix specifically what the critic flagged. Do not regenerate from scratch.\n` : ""}
+${revisionFeedback ? `\n## REVISION REQUESTED\n\nA previous attempt was rejected. The exact feedback follows. Fix only what's flagged — do not regenerate the parts that already passed.\n\n${revisionFeedback}\n` : ""}
+
+## Contract: Brainstorm Output (verbatim)
+
+${BRAINSTORM_CONTRACT}
+
+${WORKED_EXAMPLE ? `## Worked Example (a brainstorm that would pass)\n\nThis is from references/idea-schema.md. Match this STRUCTURE — section names verbatim, verdict lines exactly four bold-prefixed lines.\n\n${WORKED_EXAMPLE}\n\n---\n` : ""}
 
 ## Tier 1 Context
 
@@ -307,9 +339,30 @@ ${notes ? `Additional notes:\n${notes}\n` : ""}
 
 ## Your Output
 
-Produce ONLY the brainstorm markdown content, starting with "### Problem"
-and ending with the four "**…**" verdict lines. No preamble, no closing
-remarks, no meta-commentary.
+Produce ONLY the brainstorm markdown content. It MUST:
+
+1. Start with the line \`### Problem\` (H3, exact spelling).
+2. Contain these eight H3 sections IN THIS ORDER, names verbatim:
+   ### Problem
+   ### Audience and frequency
+   ### Existing footprint
+   ### Simplest version
+   ### Variants
+   ### Risks and open questions
+   ### Past idea overlap
+   ### Verdict
+3. End with EXACTLY these four bold-prefixed lines under \`### Verdict\`:
+   **Recommended action:** accept | reject | needs-more-thought
+   **Confidence:** high | medium | low
+   **Why:** <one sentence specific to THIS idea>
+   **If accepted, build:** <simplest version | variant 1 | variant 2 | etc>
+
+Do not invent additional sections (no "Effort estimate", no "Recommendation",
+no "Fit with current focus" — fold that content into Verdict / Risks / Variants).
+Do not rename sections. Do not change verdict-line wording. The schema
+check is mechanical and will catch any deviation.
+
+No preamble, no closing remarks, no meta-commentary.
 
 ${
   capReached
@@ -336,6 +389,6 @@ gathered what you need, write the brainstorm. An empty brainstorm is treated \
 as a failure.
 
 Be honest. If the idea is too vague to evaluate, say so explicitly in
-"Risks and open questions" and verdict accordingly. Don't pad weak ideas
-to look like strong ones.${item.budget_tokens > 0 ? `\n\nBudget hint: ~${item.budget_tokens} tokens for this brainstorm.` : ""}`;
+"Risks and open questions" and use \`needs-more-thought\` as the recommended
+action. Don't pad weak ideas to look like strong ones.${item.budget_tokens > 0 ? `\n\nBudget hint: ~${item.budget_tokens} tokens for this brainstorm.` : ""}`;
 }

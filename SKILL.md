@@ -1,17 +1,19 @@
 ---
 name: idea-harness
 description: >
-  A harness for capturing, brainstorming, and graduating LetsBarker ideas.
-  Built on the five-layer harness pattern (triggers, control, context,
-  execution, verification) with durable file-backed state and explicit
-  contracts at every handoff. Taylor's only touch points are reacting to
-  brainstormed ideas in a Claude conversation and reviewing the final PR.
+  A harness for capturing, brainstorming, accepting, and shipping LetsBarker
+  ideas as real pull requests. Six layers (triggers, control, context,
+  execution, verification, build) with durable file-backed state and
+  explicit contracts at every handoff. Taylor's only touch points are
+  reacting to brainstormed ideas in a Claude conversation and reviewing
+  the final PR on GitHub.
 ---
 
 # Idea Harness
 
 A purpose-built harness that turns half-formed thoughts into well-considered
-features without losing anything or building the wrong thing.
+features — and then into real PRs — without losing anything or building the
+wrong thing.
 
 This is **not** a workflow runner. It is a control plane: it governs what
 context agents see, what artifacts they produce, what gates they must pass,
@@ -21,7 +23,7 @@ and what state survives across runs.
 
 ## Architecture
 
-The harness has five layers, each with a clear responsibility and a clean
+The harness has six layers, each with a clear responsibility and a clean
 contract to the next.
 
 ```
@@ -30,10 +32,11 @@ contract to the next.
 │ L2  CONTROL          plans the run, decomposes work              │
 │ L3  CONTEXT          loads the right info, with a budget         │
 │ L4  EXECUTION        agents do the actual brainstorming          │
-│ L5  VERIFICATION     critic gates output before human sees it    │
+│ L5  VERIFICATION     schema check + critic, before human sees it │
+│ L6  BUILD            spawns Claude in target repo, opens a PR    │
 │                                                                  │
 │ STATE                durable artifacts that survive runs         │
-│ HANDOFF              human gate → graduation to build pipeline   │
+│ REVIEW               conversational human gate                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -159,21 +162,43 @@ See `contracts/brainstorm-output.md`.
 
 ---
 
-## L5: Verification — The Critic
+## L5: Verification — Schema Check + Critic
 
-Before any brainstorm reaches Taylor, a critic agent reviews it. This is the
-gate that prevents low-quality output from becoming review burden.
+Two gates before any brainstorm reaches Taylor. The first is mechanical
+and free; the second is qualitative and uses a small LLM.
+
+### L5a: Deterministic schema check
+
+Implemented in `scripts/lib/schema.ts`. Runs first. Validates structure
+mechanically — required H3 headers in order, exact verdict-line format,
+and rejects known drift headers (e.g. "Effort estimate", "Recommendation").
+Costs zero tokens.
+
+This gate exists because the live brainstormer (Opus) can produce a great
+brainstorm with the wrong section names — the LLM critic alone has been
+seen to rubber-stamp this. The schema check makes drift impossible.
+
+A schema failure produces precise, line-level feedback ("missing required
+section ### Existing footprint", "**Recommended action:** must be one of
+accept | reject | needs-more-thought") that the brainstormer can act on
+in a single revision.
+
+### L5b: The Critic
+
+Once schema is valid, the critic agent reviews the qualitative dimensions.
 
 **The critic checks (`contracts/critic-rubric.md`):**
 
 | Check | Pass criteria |
 |---|---|
-| Schema | All required sections present, frontmatter valid |
 | Specificity | "Simplest version" names a concrete artifact, not "a lighter version" |
 | Context use | At least one citation of `product.md`, `decisions.md`, or a past idea |
 | Verdict justification | "Why" sentence references something specific, not generic |
 | Variant differentiation | Variants meaningfully differ in scope or approach |
 | Honesty | If the idea is vague, the brainstorm says so — doesn't pad |
+| Forbidden patterns | No sycophancy, hedging-without-commitment, schema reproduction, padding |
+
+(Structural completeness is no longer a critic check — schema.ts handles it.)
 
 **Critic output:**
 ```json
@@ -257,24 +282,94 @@ After every status change, write to the file immediately. Never batch.
 
 ---
 
-## Graduation: Handoff to the Build Pipeline
+## L6: Build — The Builder
 
-Accepted ideas are picked up by the existing `idea-to-pr` skill. The handoff
-contract:
+`npm run graduate <slug>` is the bridge from accepted idea to real PR.
+Implemented in `scripts/agents/builder.ts` and orchestrated by
+`scripts/graduate.ts`.
 
-**An idea graduates when:**
-- `status: accepted`
-- `decided_at` is set
-- Frontmatter has a `project` resolvable in `projects.yml`
-- Brainstorm contains a clear "If accepted, build:" line
+**What it does:**
 
-`idea-to-pr` reads `ideas/*.md` with status `accepted` as one of its input
-sources, the same way it currently reads Reminders. It updates status to
-`building` when it picks up the idea, and `shipped` when the PR merges.
+1. Resolves the target repo from frontmatter `project` → `projects.yml`
+   (`local_path`, `github_repo`, `base_branch`).
+2. Computes a feature branch name: `idea/<slug-stub>-<id4>`.
+3. Picks the variant — newest "variant N" / "simplest version" line in
+   `## Notes` (Taylor's choice during conversational review), or falls
+   back to the brainstorm's `**If accepted, build:**` line.
+4. Composes a build directive: the brainstorm body verbatim is the spec,
+   plus the variant choice, branch name, and base branch.
+5. Spawns `claude --print --permission-mode acceptEdits` with the target
+   repo as cwd. The session has full Claude Code tools — it explores,
+   plans, edits, runs tests, commits, pushes, and opens a PR via `gh`.
+6. Parses `PR_URL=<url>` from the session's last line. Absent → failure;
+   status reverts to `accepted`.
+7. On success: writes `github_pr` to frontmatter, status →`pr-open`,
+   appends a `## PR` section to the idea body.
 
-The build pipeline shouldn't need to brainstorm — that's already done.
-LOW-confidence specs should become rare, since vague ideas were filtered at
-the critic gate.
+**What it does NOT do:**
+
+- It does not generate a separate spec. The brainstorm IS the spec — that's
+  the design choice. The brainstorm has already been gated for specificity,
+  variant differentiation, and a concrete build target.
+- It does not merge the PR. The PR is the human gate.
+- It does not push to base branches (preview/main). The system prompt
+  forbids any branch other than the one in BRANCH_NAME.
+
+**Permission posture:**
+
+The builder spawns `claude --permission-mode bypassPermissions`. This is
+deliberate: a fresh build needs `git add`, `git commit`, `git push`, and
+`gh pr create` to run without per-command approval, and the target repo's
+`.claude/settings.local.json` allow-list is unlikely to include those. We
+bypass the permission gate and rely on the system prompt's branch-pinned
+constraints + no-merge + no-force-push rules to bound risk. (This is how
+the dm-cohorts-d2e3 build got blocked the first time — `acceptEdits` lets
+edits through but still gates Bash; that's the wrong shape for this job.)
+
+**Recovery: `npm run resume`:**
+
+If a build session implements changes but doesn't reach the PR (network
+hiccup, CI agent killed, prior permission gate before bypassPermissions
+landed), the idea stays at status `building` with a `## Notes` line
+pointing to the run log. `npm run resume <slug>` re-spawns Claude in the
+worktree with a different system prompt: "the branch already has
+uncommitted work, just commit/push/PR." It does not re-implement.
+
+**Worktrees, not the primary checkout:**
+
+Every build runs in a git worktree, never in the user's main checkout.
+Default location is `<repo-parent>/<repo-basename>-worktrees/<branch-flat>`.
+Three reasons:
+
+1. **Concurrency.** `npm run graduate -- --all` with two accepted ideas
+   spawns two sessions; without worktrees both would `cd` to the same
+   directory and stomp HEAD on each other's `git checkout -b`.
+2. **Working-tree isolation.** Without a worktree, an in-progress edit
+   sitting in your primary checkout could be picked up by the builder's
+   `git add` and end up in the PR. The worktree is clean by construction.
+3. **Clean recovery.** Crashes leave the worktree dirty, not the repo.
+   `npm run resume` reuses the same worktree; in-flight changes are still
+   there.
+
+Cleanup is opt-in: `npm run cleanup` shows what's eligible (worktrees of
+ideas at `shipped`); `--apply` actually removes. Nothing auto-deletes.
+
+**Modes (env: `IDEA_HARNESS_BUILDER`):**
+
+- `live` (default) — spawn Claude in the repo and actually build.
+- `dry` — print the prompt and resolved settings; don't spawn.
+- `offline` — skip Claude, return a fake PR URL; used in tests.
+
+**Status flow:**
+
+```
+accepted ──[npm run graduate]──> building ──[claude session]──> pr-open ──[merge]──> shipped
+                                    │
+                                    └──[failure]──> accepted (re-queueable)
+```
+
+The `npm run review in-flight` command surfaces accepted / building / pr-open
+ideas so a quick check tells you what's still moving through the pipeline.
 
 ---
 
@@ -285,7 +380,7 @@ the critic gate.
                        ↓
                       raw
                        ↓ [brainstormer]
-                       ↓ [critic]
+                       ↓ [schema check + critic]
                        ↓
                   brainstormed ─────► needs-critic-review (escalation)
                        ↓
@@ -293,10 +388,12 @@ the critic gate.
               ↓        ↓        ↓
           accepted  rejected  needs-more-thought
               ↓                    ↓
-        [idea-to-pr]          (loop counter++)
+       [npm run graduate]     (loop counter++)
               ↓                    ↓
-          building            (rebrew on next run, until counter=3)
-              ↓
+          building             (rebrew on next run, until counter=3)
+              ↓ [claude session in repo]
+          pr-open
+              ↓ [PR merged]
            shipped
 ```
 
@@ -308,24 +405,35 @@ they're searchable context for future decisions and never auto-deleted.
 ## Running It
 
 ```bash
-# Full harness run: harvest → plan → brainstorm → verify
+# Full harness run: harvest → plan → brainstorm → schema + critic
 npm run garden
-
-# Inspect the latest run
-npm run inspect
 
 # Show ideas waiting for review
 npm run waiting
 
-# Manually trigger a status change (Claude does this conversationally)
-npm run status set <slug> accepted
-```
+# Conversational review CLI (Claude calls these during the chat review)
+npm run review next                       # JSON for the next idea
+npm run review accept <slug> [note]       # mark accepted
+npm run review reject <slug> [note]
+npm run review thought <slug> [note]
+npm run review in-flight                  # accepted / building / pr-open
 
-For Claude CLI invocation:
+# Ship the next eligible idea (no slug needed)
+npm run ship                              # picks newest accepted, or auto-accepts brainstormed
+npm run ship <slug>                       # explicit
+npm run ship -- --yes                     # don't prompt for auto-accept confirmation
 
-```bash
-claude --include context/ --include ideas/ --include contracts/ \
-       "Run the idea-harness per SKILL.md"
+# Or step-by-step
+npm run graduate <slug>                   # accepted → PR (fresh build)
+npm run graduate <slug> --variant=v2      # override variant choice
+npm run graduate <slug> --dry             # preview the build prompt
+npm run graduate -- --all                 # graduate every accepted idea
+npm run resume <slug>                     # recover a `building` idea whose session died
+
+# Slugs accept unique prefix or substring (`dm-cohorts` is fine).
+
+# Inspect run history + metrics
+npm run inspect
 ```
 
 ---

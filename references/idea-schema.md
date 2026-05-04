@@ -16,7 +16,8 @@ project: letsbarker                           # key from projects.yml
 captured_at: <ISO 8601 UTC>                   # set at harvest
 brainstormed_at: ~                            # set after critic pass
 decided_at: ~                                 # set when Taylor reacts
-github_issue: ~                               # set when idea-to-pr opens issue
+github_issue: ~                               # reserved for future Issue-first flows
+github_pr: ~                                  # set by the builder when PR opens
 loop_count: 0                                 # # of needs-more-thought cycles
 ---
 ```
@@ -52,29 +53,32 @@ loop_count: 0                                 # # of needs-more-thought cycles
                     ↓
                    raw
                     ↓ [brainstormer]
-                    ↓ [critic pass]
+                    ↓ [schema check + critic pass]
               brainstormed ─────► needs-critic-review
                     ↓
             [Taylor reacts]
             ↓       ↓        ↓
         accepted  rejected  needs-more-thought (loop_count++)
             ↓                    ↓
-       [idea-to-pr]          (rebrew until loop_count == 3)
+       [npm run graduate]   (rebrew until loop_count == 3)
             ↓                    ↓
         building            (escalate to Taylor on 3rd bounce)
-            ↓
+            ↓ [builder spawns claude in repo]
+         pr-open
+            ↓ [PR merged]
          shipped
 ```
 
 | Status | Meaning |
 |---|---|
 | `raw` | Captured, not yet brainstormed |
-| `brainstormed` | Critic passed, awaiting Taylor's reaction |
-| `needs-critic-review` | Critic escalated — Taylor sees a vague brainstorm |
-| `accepted` | Taylor said yes — graduating to build pipeline |
+| `brainstormed` | Schema + critic passed, awaiting Taylor's reaction |
+| `needs-critic-review` | Schema or critic escalated — Taylor sees a flagged brainstorm |
+| `accepted` | Taylor said yes — ready for `npm run graduate` |
 | `rejected` | Taylor said no — archived, never deleted |
 | `needs-more-thought` | Taylor isn't ready, loop_count increments |
-| `building` | Picked up by idea-to-pr, in spec/PR phase |
+| `building` | Builder is spawning a Claude session in the target repo |
+| `pr-open` | Builder opened a PR (`github_pr` set), waiting on review/merge |
 | `shipped` | PR merged, feature is live |
 
 `rejected` and `shipped` are terminal but not deleted. They're searchable
@@ -107,6 +111,7 @@ captured_at: 2026-05-03T14:22:00Z
 brainstormed_at: 2026-05-03T14:24:31Z
 decided_at: ~
 github_issue: ~
+github_pr: ~
 loop_count: 0
 ---
 
