@@ -16,6 +16,7 @@ import { plan, RunPlan } from "./agents/initializer";
 import { harvest } from "./agents/harvester";
 import { brainstorm, BrainstormResult } from "./agents/brainstormer";
 import { critique } from "./agents/critic";
+import { checkBrainstormSchema } from "./lib/schema";
 import { writeRunArtifact, finalizeRun, startRun } from "./lib/runs";
 import { recordMetric } from "./lib/metrics";
 import { log } from "./lib/log";
@@ -43,6 +44,99 @@ function brainstormArtifact(result: BrainstormResult) {
     tokensUsed: result.tokensUsed,
     durationMs: result.durationMs,
   };
+}
+
+type Outcome = "passed" | "escalated" | "skipped";
+
+/**
+ * Validate one brainstorm. Allows up to one revision pass total — schema
+ * fail or critic-revise both consume it. Commits on success, escalates on
+ * persistent failure, or returns "skipped" when the brainstormer produced
+ * empty output (the idea stays raw for the next run).
+ *
+ * Why structured this way:
+ *   - schema check is deterministic and free → run first, save critic tokens
+ *   - LLM critic only checks qualitative criteria once schema is sound
+ *   - feedback is concatenated when both layers fail so the brainstormer
+ *     fixes everything in one revision rather than ping-ponging
+ */
+async function validateAndCommit(args: {
+  item: import("./agents/initializer").BrainstormItem;
+  run: import("./lib/runs").Run;
+  brainstormResult: BrainstormResult;
+}): Promise<Outcome> {
+  const { item, run } = args;
+  const slug = item.slug;
+  let current = args.brainstormResult;
+  let revisionUsed = false;
+
+  while (true) {
+    const phase = revisionUsed ? "r2" : "r1";
+
+    const schema = checkBrainstormSchema(current.output);
+    writeRunArtifact(run, `schema-${slug}-${phase}.json`, schema);
+
+    let critic: Awaited<ReturnType<typeof critique>> | null = null;
+    if (schema.ok) {
+      critic = await critique({
+        brainstorm: current.output,
+        rawIdea: current.rawIdea,
+        run,
+      });
+      writeRunArtifact(run, `critic-${slug}-${phase}.json`, critic);
+      recordMetric("critic.tokens", critic.tokensUsed);
+    } else {
+      log.warn(`  Schema check failed for ${slug}: ${schema.failures.length} issue(s).`);
+      recordMetric("schema.fail", 1);
+    }
+
+    const passed = schema.ok && critic?.verdict === "pass";
+    if (passed) {
+      try {
+        await current.commit();
+        recordMetric(revisionUsed ? "brainstorm.pass_after_revision" : "brainstorm.pass", 1);
+        return "passed";
+      } catch (err) {
+        log.error(`  Commit refused for ${slug}:`, err);
+        recordMetric("brainstorm.commit_refused", 1);
+        return "skipped";
+      }
+    }
+
+    // Compose feedback: whichever layer failed contributes.
+    const feedback = [
+      schema.ok ? "" : schema.feedback,
+      critic && critic.verdict !== "pass" ? `Critic: ${critic.feedback}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    if (revisionUsed) {
+      // Out of revisions — escalate with whatever feedback we have.
+      try {
+        await current.commitAsNeedsCriticReview(feedback);
+        recordMetric("brainstorm.escalated", 1);
+        return "escalated";
+      } catch (err) {
+        log.error(`  Commit refused for ${slug}:`, err);
+        recordMetric("brainstorm.commit_refused", 1);
+        return "skipped";
+      }
+    }
+
+    log.info(`  Revising ${slug} with concatenated schema+critic feedback.`);
+    const revised = await brainstorm(item, run, { feedback });
+    writeRunArtifact(run, `brainstorm-${slug}-r2.json`, brainstormArtifact(revised));
+    recordMetric("brainstorm.tokens", revised.tokensUsed);
+
+    if (!revised.output.trim()) {
+      log.warn(`  Empty revision output for ${slug} — leaving raw, will retry.`);
+      recordMetric("brainstorm.empty_output", 1);
+      return "skipped";
+    }
+    current = revised;
+    revisionUsed = true;
+  }
 }
 
 async function main() {
@@ -101,76 +195,10 @@ async function main() {
     writeRunArtifact(run, `brainstorm-${slug}.json`, brainstormArtifact(brainstormResult));
     recordMetric("brainstorm.tokens", brainstormResult.tokensUsed);
 
-    if (!brainstormResult.output.trim()) {
-      // The brainstormer ran but produced no body (e.g., the model replied
-      // with only context_request blocks across every iteration). Skip the
-      // critic, leave the idea `raw`, retry next run.
-      log.warn(`  Empty brainstorm output for ${slug} — leaving raw, will retry.`);
-      recordMetric("brainstorm.empty_output", 1);
-      continue;
-    }
-
-    const criticResult = await critique({
-      brainstorm: brainstormResult.output,
-      rawIdea: brainstormResult.rawIdea,
-      run,
-    });
-    writeRunArtifact(run, `critic-${slug}.json`, criticResult);
-    recordMetric("critic.tokens", criticResult.tokensUsed);
-
-    if (criticResult.verdict === "pass") {
-      try {
-        await brainstormResult.commit();
-        passed++;
-        recordMetric("brainstorm.pass", 1);
-      } catch (err) {
-        log.error(`  Commit refused for ${slug}:`, err);
-        recordMetric("brainstorm.commit_refused", 1);
-      }
-    } else if (criticResult.verdict === "revise") {
-      log.info(`  Critic requested revision: ${criticResult.feedback}`);
-      const revised = await brainstorm(item, run, { feedback: criticResult.feedback });
-      writeRunArtifact(run, `brainstorm-${slug}-r2.json`, brainstormArtifact(revised));
-      recordMetric("brainstorm.tokens", revised.tokensUsed);
-
-      if (!revised.output.trim()) {
-        log.warn(`  Empty revision output for ${slug} — leaving raw, will retry.`);
-        recordMetric("brainstorm.empty_output", 1);
-        continue;
-      }
-
-      const reCheck = await critique({
-        brainstorm: revised.output,
-        rawIdea: revised.rawIdea,
-        run,
-      });
-      writeRunArtifact(run, `critic-${slug}-r2.json`, reCheck);
-      recordMetric("critic.tokens", reCheck.tokensUsed);
-
-      try {
-        if (reCheck.verdict === "pass") {
-          await revised.commit();
-          passed++;
-          recordMetric("brainstorm.pass_after_revision", 1);
-        } else {
-          await revised.commitAsNeedsCriticReview(reCheck.feedback);
-          escalated++;
-          recordMetric("brainstorm.escalated", 1);
-        }
-      } catch (err) {
-        log.error(`  Commit refused for ${slug}:`, err);
-        recordMetric("brainstorm.commit_refused", 1);
-      }
-    } else {
-      try {
-        await brainstormResult.commitAsNeedsCriticReview(criticResult.feedback);
-        escalated++;
-        recordMetric("brainstorm.escalated", 1);
-      } catch (err) {
-        log.error(`  Commit refused for ${slug}:`, err);
-        recordMetric("brainstorm.commit_refused", 1);
-      }
-    }
+    // Validate (schema then critic), allow up to one revision, commit or escalate.
+    const outcome = await validateAndCommit({ item, run, brainstormResult });
+    if (outcome === "passed") passed++;
+    else if (outcome === "escalated") escalated++;
   }
 
   // ── Run summary ──────────────────────────────────────────────────────

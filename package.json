@@ -8,6 +8,7 @@
     "waiting": "ts-node scripts/review.ts list",
     "review": "ts-node scripts/review.ts",
     "status": "ts-node scripts/review.ts",
+    "graduate": "ts-node scripts/graduate.ts",
     "inspect": "ts-node scripts/inspect.ts",
     "typecheck": "tsc --noEmit"
   },

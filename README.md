@@ -1,11 +1,16 @@
 # Idea Harness
 
-A purpose-built harness for capturing, brainstorming, and graduating LetsBarker
-ideas. Built on the five-layer harness pattern.
+A purpose-built harness that turns half-formed thoughts into real pull
+requests, end-to-end. Six layers: capture (Apple Reminders), brainstorm
+(Claude Opus), validate (deterministic schema + Claude Haiku critic),
+review (conversational, in Claude), graduate (Claude Code spawned in the
+target repo, opens a PR).
 
-This is the **idea system** — the thinking layer between raw capture and the
-build pipeline. The build pipeline (`idea-to-pr`) lives separately and consumes
-`accepted` ideas from this harness.
+This is **the** idea system — there is no separate build pipeline. The
+brainstorm IS the spec. `npm run graduate <slug>` hands an accepted idea
+to a fresh Claude Code session inside the target repo's working directory
+and lets it explore the codebase, implement the chosen variant on a
+feature branch, and open the PR.
 
 ## Quick Start
 
@@ -18,14 +23,25 @@ $EDITOR context/product.md context/decisions.md   # fill them in
 # 2. Install deps
 npm install
 
-# 3. Run a full harness pass
+# 3. Run a full harness pass: harvest reminders → brainstorm → schema + critic
 npm run garden
 
 # 4. Review ideas conversationally in Claude (mobile or desktop)
 #    Just ask: "What ideas are waiting for me?"
+#    Or hit the CLI directly:
+npm run waiting
 
-# 5. Inspect what the last run did
-npm run inspect
+# 5. Accept one
+npm run review accept <slug>
+
+# 6. Graduate it to a real PR. Spawns Claude Code in the target repo,
+#    plans/implements/tests, pushes a branch, opens a PR.
+npm run graduate <slug>
+# (or `--dry` to preview the prompt, `--all` to graduate every accepted idea)
+
+# 7. Track in-flight work
+npm run review in-flight    # shows accepted / building / pr-open
+npm run inspect             # rolling metrics + last-run summary
 ```
 
 > `context/product.md` and `context/decisions.md` are gitignored on purpose —
@@ -44,11 +60,13 @@ CONTEXT — Tier 1 always, Tier 2/3 on request, with token budget
    ↓
 EXECUTION — brainstormer produces output (fresh context per idea)
    ↓
-VERIFICATION — critic gates output against the rubric
+VERIFICATION — deterministic schema check, then LLM critic
    ↓
 STATE — durable artifacts in ideas/ and runs/
    ↓
-HANDOFF — Taylor reacts conversationally → accepted ideas graduate
+REVIEW — Taylor reacts conversationally → accept / reject / needs-more-thought
+   ↓
+BUILD — `npm run graduate` spawns Claude Code in the target repo, opens a PR
 ```
 
 See `SKILL.md` for the full design and `contracts/` for the machine-checkable
@@ -72,18 +90,21 @@ idea-harness/
   references/
     idea-schema.md                  ← idea file frontmatter + body
   scripts/
-    garden.ts                       ← top-level orchestrator
+    garden.ts                       ← top-level orchestrator (capture → review)
+    graduate.ts                     ← orchestrator (accepted → PR)
     review.ts                       ← conversational review CLI helpers
     inspect.ts                      ← view latest run + metrics
     agents/
       initializer.ts                ← L2: plans the run
       harvester.ts                  ← Reminders → raw idea files
       brainstormer.ts               ← L4: brainstorms one idea
-      critic.ts                     ← L5: gates output
+      critic.ts                     ← L5: gates output (qualitative)
+      builder.ts                    ← L6: spawns claude in target repo, opens PR
     lib/
       ideas.ts                      ← idea file read/write
       runs.ts                       ← run lifecycle
       context.ts                    ← Tier 1/2/3 loading
+      schema.ts                     ← deterministic brainstorm schema check
       llm.ts                        ← model adapters
       reminders.ts                  ← Reminders MCP adapter
       loops.ts                      ← loop detection
@@ -138,6 +159,8 @@ called "App Ideas", then `npm run garden`.
 | `IDEA_HARNESS_LLM` | `sdk` / `cli` / `offline` — force a transport | auto |
 | `IDEA_HARNESS_CLAUDE_BIN` | path to the `claude` binary | resolved on PATH |
 | `IDEA_HARNESS_CLAUDE_TIMEOUT_MS` | per-CLI-call timeout | 300000 |
+| `IDEA_HARNESS_BUILDER` | `live` / `offline` / `dry` — builder mode | `live` |
+| `IDEA_HARNESS_BUILDER_TIMEOUT_MS` | builder session timeout | 1800000 (30 min) |
 | `IDEA_HARNESS_REMINDERS` | `dry` to skip Apple Reminders | live on macOS |
 | `IDEA_HARNESS_BRAINSTORMER_MODEL` | brainstormer model id | `claude-opus-4-7` |
 | `IDEA_HARNESS_CRITIC_MODEL` | critic model id | `claude-haiku-4-5-20251001` |

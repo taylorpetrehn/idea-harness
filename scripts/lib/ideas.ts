@@ -9,8 +9,12 @@
 import * as fs from "fs";
 import * as path from "path";
 import { fuzzyTitleMatch } from "./text";
+import { log } from "./log";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
+
+/** Per-process set of idea files we've already warned about for verdict drift. */
+const warnedDriftFiles = new Set<string>();
 
 export type IdeaStatus =
   | "raw"
@@ -20,6 +24,7 @@ export type IdeaStatus =
   | "rejected"
   | "needs-more-thought"
   | "building"
+  | "pr-open"
   | "shipped";
 
 export interface IdeaSummary {
@@ -33,6 +38,7 @@ export interface IdeaSummary {
   brainstormed_at: string;
   decided_at: string;
   github_issue: string;
+  github_pr: string;
   loop_count: number;
   // Parsed verdict fields if brainstormed
   recommended_action?: "accept" | "reject" | "needs-more-thought";
@@ -148,24 +154,85 @@ export function parseIdeaFile(filepath: string): IdeaSummary {
     return m[1].trim().replace(/^"|"$/g, "").replace(/^~$/, "");
   };
 
-  const actionMatch = content.match(/\*\*Recommended action:\*\*\s*(\w[\w-]*)/);
-  const confidenceMatch = content.match(/\*\*Confidence:\*\*\s*(high|medium|low)/i);
-  const buildMatch = content.match(/\*\*If accepted, build:\*\*\s*(.+)/);
+  const status = (get("status") as IdeaStatus) || "raw";
+  const verdict = parseVerdict(content);
+
+  // A `brainstormed` file with no parseable verdict is a bug — usually a
+  // contract drift the schema check should have caught. Warn once per file
+  // per process so the noise doesn't drown out real run output.
+  if (status === "brainstormed" && !verdict.recommended_action && !warnedDriftFiles.has(filepath)) {
+    warnedDriftFiles.add(filepath);
+    log.warn(
+      `parseIdeaFile: ${filename} is marked "brainstormed" but has no parseable ` +
+        `**Recommended action:** line. Frontmatter and body have drifted — re-run ` +
+        `the brainstormer or fix the verdict block manually.`
+    );
+  }
 
   return {
     filename,
     slug,
     id: get("id"),
     title: get("title"),
-    status: (get("status") as IdeaStatus) || "raw",
+    status,
     project: get("project") || "letsbarker",
     captured_at: get("captured_at"),
     brainstormed_at: get("brainstormed_at"),
     decided_at: get("decided_at"),
     github_issue: get("github_issue"),
+    github_pr: get("github_pr"),
     loop_count: parseInt(get("loop_count") || "0", 10),
-    recommended_action: actionMatch?.[1] as IdeaSummary["recommended_action"],
-    confidence: confidenceMatch?.[1].toLowerCase() as IdeaSummary["confidence"],
-    if_accepted_build: buildMatch?.[1]?.trim(),
+    recommended_action: verdict.recommended_action,
+    confidence: verdict.confidence,
+    if_accepted_build: verdict.if_accepted_build,
   };
+}
+
+interface ParsedVerdict {
+  recommended_action?: IdeaSummary["recommended_action"];
+  confidence?: IdeaSummary["confidence"];
+  if_accepted_build?: string;
+}
+
+/**
+ * Parse the four canonical verdict lines from a brainstorm body.
+ *
+ * Strict on the contract format (\`**Recommended action:** ...\`). Tolerant
+ * only of trailing-asterisk drift (\`**Verdict: build**\` showed up in the
+ * dm-cohorts run before the schema gate landed). Anything else returns
+ * empty fields, and the caller decides whether to warn.
+ */
+function parseVerdict(content: string): ParsedVerdict {
+  const action = matchBoldLabel(content, "Recommended action");
+  const confidence = matchBoldLabel(content, "Confidence");
+  const build = matchBoldLabel(content, "If accepted, build");
+
+  const normalizedAction = action?.toLowerCase();
+  const recommended_action: ParsedVerdict["recommended_action"] = (
+    normalizedAction === "accept" || normalizedAction === "reject" || normalizedAction === "needs-more-thought"
+      ? normalizedAction
+      : undefined
+  );
+
+  const normalizedConfidence = confidence?.toLowerCase();
+  const confidenceField: ParsedVerdict["confidence"] = (
+    normalizedConfidence === "high" || normalizedConfidence === "medium" || normalizedConfidence === "low"
+      ? normalizedConfidence
+      : undefined
+  );
+
+  return {
+    recommended_action,
+    confidence: confidenceField,
+    if_accepted_build: build || undefined,
+  };
+}
+
+function matchBoldLabel(content: string, label: string): string | null {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Match either "**Label:** value" (canonical) or "**Label: value**" (drift).
+  const canonical = new RegExp(`\\*\\*${escaped}:\\*\\*\\s*(.+)`, "i");
+  const drift = new RegExp(`\\*\\*${escaped}:\\s*([^*\\n]+?)\\*\\*`, "i");
+  const m = content.match(canonical) ?? content.match(drift);
+  return m ? m[1].trim() : null;
 }

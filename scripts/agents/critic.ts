@@ -1,14 +1,30 @@
 /**
  * scripts/agents/critic.ts
  *
- * L5: Verification. Checks the brainstorm against contracts/critic-rubric.md.
+ * L5: Verification — qualitative half. Structural validation already ran
+ * deterministically (lib/schema.ts) before this — if we got here, schema
+ * is correct. The critic's job now is judgment-only: specificity,
+ * context citation, verdict justification, variant differentiation,
+ * honest hedging, sycophancy/padding patterns.
+ *
  * Uses a smaller/cheaper model than the brainstormer.
  *
  * Outputs a verdict: pass | revise | escalate.
  */
 
+import * as fs from "fs";
+import * as path from "path";
 import { Run } from "../lib/runs";
 import { callCriticModel } from "../lib/llm";
+
+const CONTRACTS_DIR = path.join(__dirname, "..", "..", "contracts");
+const CRITIC_RUBRIC = readFileOrThrow(path.join(CONTRACTS_DIR, "critic-rubric.md"));
+const BRAINSTORM_CONTRACT = readFileOrThrow(path.join(CONTRACTS_DIR, "brainstorm-output.md"));
+
+function readFileOrThrow(p: string): string {
+  if (!fs.existsSync(p)) throw new Error(`Required harness file missing: ${p}`);
+  return fs.readFileSync(p, "utf8");
+}
 
 export type CriticVerdict = "pass" | "revise" | "escalate";
 
@@ -30,28 +46,24 @@ export async function critique(opts: {
 to gate brainstorm output before it reaches Taylor. You do not regenerate
 or improve — you only check.
 
-You are following contracts/critic-rubric.md.
+A deterministic schema check has ALREADY validated structure (required
+H3 sections, verdict-line format). Don't re-check structure — focus on
+the qualitative checks below.
 
-## Required checks
+## Contract the brainstorm was written against (verbatim)
 
-1. schema_completeness — all required sections present, in order, with content
-2. specificity — "Simplest version" names a concrete artifact (screen, CTA, field)
-3. context_citation — references product.md, decisions.md, or a specific past idea
-4. verdict_justification — "Why:" sentence is specific to THIS idea, not generic
-5. variant_differentiation — variants meaningfully differ in scope or approach
-6. honest_hedging — if "needs-more-thought", names what's specifically missing
-7. forbidden_patterns — no sycophancy, hedging without commitment, generic verdicts,
-   schema reproduction, or padding
+${BRAINSTORM_CONTRACT}
 
-## Decision rules
-- 0 failures → "pass"
-- 1-2 fixable failures → "revise"
-- 3+ failures, OR same failure repeated after a revision → "escalate"
+## Critic Rubric (verbatim)
+
+${CRITIC_RUBRIC}
 
 ## The raw idea (for context)
+
 ${rawIdea}
 
 ## The brainstorm to check
+
 ${brainstorm}
 
 ## Your output
@@ -60,20 +72,25 @@ Return ONLY a JSON object with this shape:
 {
   "verdict": "pass" | "revise" | "escalate",
   "checks": {
-    "schema_completeness": "pass" | "fail: <reason>",
-    "specificity": "pass" | "fail: <reason>",
+    "specificity": "pass" | "fail: <one-line reason citing the offending text>",
     "context_citation": "pass" | "fail: <reason>",
     "verdict_justification": "pass" | "fail: <reason>",
     "variant_differentiation": "pass" | "fail: <reason>",
     "honest_hedging": "pass" | "fail: <reason>",
-    "forbidden_patterns": "pass" | "fail: <reason>"
+    "forbidden_patterns": "pass" | "fail: <which pattern + where>"
   },
-  "feedback": "<one paragraph telling the brainstormer what to fix, OR empty if pass>"
+  "feedback": "<one paragraph telling the brainstormer what to fix, OR empty string if pass>"
 }
 
-Be a strict but fair auditor. Pass the brainstorm if it's substantively
-useful for Taylor's decision, even if not perfect. Reject only when there's
-a real quality problem.`;
+Decision rules (apply mechanically):
+- 0 failures → "pass"
+- 1-2 fixable failures → "revise"
+- 3+ failures, OR same failure repeated after a revision → "escalate"
+
+Be strict but fair. Pass when the brainstorm is substantively useful for
+Taylor's decision, even if not perfect. Reject only when there's a real
+quality problem — and when you reject, quote the specific offending text
+in your reason so the brainstormer knows what to change.`;
 
   const { output, tokensUsed } = await callCriticModel({ prompt });
   const parsed = parseCriticOutput(output);
