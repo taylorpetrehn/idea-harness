@@ -2,13 +2,10 @@
 /**
  * bin/harness.ts
  *
- * Single binary entrypoint. Every verb is implemented in
- * scripts/commands/<verb>.ts as `run(args, output)`. This file just
- * wires commander → verb fn → Output, and is the only argv consumer
- * in the codebase.
- *
- * Output mode is selected once from the top-level flags (--json or
- * --ndjson) and threaded into every command via the Output instance.
+ * Single binary entrypoint. Every verb lives in
+ * scripts/commands/<verb>.ts as `run(args, output)`. This file is the
+ * only argv consumer in the codebase — verb fns take typed args and
+ * write through an Output instance.
  *
  * Adding a new verb:
  *   1. Implement scripts/commands/<verb>.ts exporting `run`.
@@ -18,12 +15,15 @@
 
 import { Command, Option } from "commander";
 import { Output, modeFromFlags } from "../scripts/lib/output";
-import { ErrorCode } from "../scripts/lib/contracts";
 
 interface GlobalFlags {
   json?: boolean;
   ndjson?: boolean;
   noColor?: boolean;
+}
+
+function getFlags(program: Command): GlobalFlags {
+  return program.opts<GlobalFlags>();
 }
 
 function makeOutput(verb: string, opts: GlobalFlags): Output {
@@ -34,12 +34,6 @@ function makeOutput(verb: string, opts: GlobalFlags): Output {
   });
 }
 
-/**
- * Wrap a verb fn so any thrown error becomes a clean envelope on the
- * Output object instead of an uncaught exception. Verb fns are
- * expected to call `out.result()` / `out.error()` themselves on the
- * happy / known-error paths; this is the safety net for the unknown.
- */
 async function runVerb<A>(
   verb: string,
   args: A,
@@ -53,6 +47,13 @@ async function runVerb<A>(
       out.error("INTERNAL", `Verb "${verb}" returned without producing a result.`);
       process.exit(2);
     }
+    // Exit 1 on logical error envelopes so shell scripts can branch.
+    // The Output object knows its final shape.
+    if ((out as any)._settled) {
+      // We can't easily inspect the envelope post-emission without
+      // exposing it. Keep success as exit 0; verb fns that emit
+      // out.error() are responsible for not also calling process.exit.
+    }
   } catch (err) {
     if (!out.settled) {
       const e = err as Error;
@@ -64,21 +65,6 @@ async function runVerb<A>(
   }
 }
 
-// ── Stub for verbs not yet ported ───────────────────────────────────
-// Phase 2 wires only `contracts`. Every other verb gets this stub
-// until phase 3 lands. Helps confirm the routing works without
-// pretending verbs are functional.
-
-async function notYetImplemented(verb: string, out: Output): Promise<void> {
-  out.error(
-    "BAD_INPUT" satisfies ErrorCode,
-    `\`${verb}\` will be available after phase 3 lands.`,
-    { hint: "See proposals/next-gen-cli.md for the migration plan." }
-  );
-}
-
-// ── Build the command tree ──────────────────────────────────────────
-
 const program = new Command();
 
 program
@@ -89,139 +75,181 @@ program
   .option("--ndjson", "stream events as JSON lines, terminating with the envelope")
   .option("--no-color", "disable ANSI color in pretty mode")
   .showHelpAfterError(true)
-  .configureHelp({
-    sortSubcommands: true,
-  });
+  .configureHelp({ sortSubcommands: true });
 
-// `harness contracts` ───────────────────────────────────────────────
+// ── contracts ───────────────────────────────────────────────────────
 program
   .command("contracts")
   .description("Emit JSON Schema for every verb's data shape and event types")
   .addOption(new Option("--meta", "include the envelope/event base schemas"))
   .action(async (opts) => {
     const { run } = await import("../scripts/commands/contracts");
+    await runVerb("contracts", { includeMeta: !!opts.meta }, run, getFlags(program));
+  });
+
+// ── capture ─────────────────────────────────────────────────────────
+program
+  .command("capture")
+  .description("Add a new idea (text | --from reminders|stdin|issue)")
+  .argument("[text...]", "raw idea text (creates a single idea)")
+  .option("--from <source>", "reminders | stdin | issue | text")
+  .option("--project <key>", "project key from projects.yml")
+  .action(async (text: string[], opts) => {
+    const { run } = await import("../scripts/commands/capture");
     await runVerb(
-      "contracts",
-      { includeMeta: !!opts.meta },
+      "capture",
+      { text, from: opts.from, project: opts.project },
       run,
-      program.opts<GlobalFlags>()
+      getFlags(program)
     );
   });
 
-// ── Verb stubs (phase 2 placeholder — phase 3 replaces these) ──────
-const STUB_VERBS: Array<[string, string, (sub: Command) => void]> = [
-  ["capture", "Add a new idea (text | --from reminders|stdin|issue)", (cmd) => {
-    cmd.argument("[text...]", "raw idea text");
-    cmd.option("--from <source>", "source: reminders|stdin|issue|text");
-    cmd.option("--project <key>", "project key from projects.yml");
-  }],
-  ["brainstorm", "Plan → harvest → brainstorm → schema → critic", (cmd) => {
-    cmd.option("--idea <slug>", "focus on one idea");
-    cmd.option("--dry", "plan only, do not execute");
-  }],
-  ["ship", "Do the obvious next thing — pick an idea and graduate/resume it", (cmd) => {
-    cmd.argument("[slug]", "explicit idea slug");
-    cmd.option("--variant <text>", "override variant choice");
-    cmd.option("-y, --yes", "skip confirmation when auto-accepting");
-    cmd.option("--dry", "preview the prompt without spawning");
-  }],
-  ["resume", "Recover a `building` idea by landing in-flight work", (cmd) => {
-    cmd.argument("<slug>", "idea slug");
-  }],
-  ["cleanup", "Remove worktrees for shipped ideas", (cmd) => {
-    cmd.option("--apply", "actually remove (default: dry-run)");
-    cmd.option("--include-rejected", "also clean up rejected ideas");
-    cmd.option("--orphans", "also clean orphaned worktrees");
-  }],
-  ["inspect", "Show recent runs and rolling metrics", (cmd) => {
-    cmd.option("--runs <n>", "number of runs to include", "5");
-    cmd.option("--metric <name>", "filter to a single metric");
-  }],
-  ["doctor", "Check environment health: projects.yml, claude bin, gh auth, …", () => {}],
-  ["completions", "Emit a shell completion script", (cmd) => {
-    cmd.argument("<shell>", "bash | zsh | fish");
-  }],
-  ["serve", "Run as an MCP or HTTP server (lands in phase 7)", (cmd) => {
-    cmd.option("--mcp", "MCP server over stdio");
-    cmd.option("--http <addr>", "HTTP server, e.g. :7717");
-  }],
-];
-
-for (const [name, desc, configure] of STUB_VERBS) {
-  const cmd = program.command(name).description(desc);
-  configure(cmd);
-  cmd.action(async () => {
-    const out = makeOutput(name, program.opts<GlobalFlags>());
-    await notYetImplemented(name, out);
-    process.exit(1);
+// ── brainstorm ──────────────────────────────────────────────────────
+program
+  .command("brainstorm")
+  .description("Plan → harvest → brainstorm → schema → critic")
+  .option("--idea <slug>", "focus on one idea")
+  .option("--dry", "plan only, do not execute")
+  .action(async (opts) => {
+    const { run } = await import("../scripts/commands/brainstorm");
+    await runVerb("brainstorm", { idea: opts.idea, dry: !!opts.dry }, run, getFlags(program));
   });
-}
 
-// ── Verb groups (phase 3 fills these in) ───────────────────────────
-
+// ── ideas ───────────────────────────────────────────────────────────
 const ideas = program.command("ideas").description("Inspect captured ideas");
 ideas
   .command("list")
   .description("List ideas, optionally filtered by status or project")
   .option("--status <s>", "filter by status")
   .option("--project <p>", "filter by project key")
-  .action(async () => {
-    const out = makeOutput("ideas.list", program.opts<GlobalFlags>());
-    await notYetImplemented("ideas.list", out);
-    process.exit(1);
+  .action(async (opts) => {
+    const { runList } = await import("../scripts/commands/ideas");
+    await runVerb(
+      "ideas.list",
+      { status: opts.status, project: opts.project },
+      runList,
+      getFlags(program)
+    );
   });
 ideas
   .command("show")
-  .description("Show one idea")
+  .description("Show one idea — full file or a single section")
   .argument("<slug>")
-  .option("--section <name>", "frontmatter | brainstorm | notes")
-  .action(async () => {
-    const out = makeOutput("ideas.show", program.opts<GlobalFlags>());
-    await notYetImplemented("ideas.show", out);
-    process.exit(1);
+  .option("--section <name>", "frontmatter | brainstorm | notes | raw")
+  .action(async (slug: string, opts) => {
+    const { runShow } = await import("../scripts/commands/ideas");
+    await runVerb("ideas.show", { slug, section: opts.section }, runShow, getFlags(program));
   });
 ideas
   .command("waiting")
   .description("Ideas with status=brainstormed | needs-critic-review")
   .action(async () => {
-    const out = makeOutput("ideas.waiting", program.opts<GlobalFlags>());
-    await notYetImplemented("ideas.waiting", out);
-    process.exit(1);
+    const { runWaiting } = await import("../scripts/commands/ideas");
+    await runVerb("ideas.waiting", {}, runWaiting, getFlags(program));
   });
 
+// ── review ──────────────────────────────────────────────────────────
 const review = program.command("review").description("Conversational review hooks");
-for (const sub of ["next", "in-flight"] as const) {
-  review.command(sub).description(`harness review ${sub}`).action(async () => {
-    const out = makeOutput(`review.${sub}`, program.opts<GlobalFlags>());
-    await notYetImplemented(`review.${sub}`, out);
-    process.exit(1);
+review
+  .command("next")
+  .description("JSON envelope for the next idea to review")
+  .action(async () => {
+    const { runNext } = await import("../scripts/commands/review");
+    await runVerb("review.next", {}, runNext, getFlags(program));
   });
-}
-for (const sub of ["accept", "reject", "thought"] as const) {
-  review
-    .command(sub)
-    .description(`Mark an idea as ${sub === "thought" ? "needs-more-thought" : sub + "ed"}`)
-    .argument("<slug>")
-    .option("--note <text>", "free-form note appended to ## Notes")
-    .option("--variant <text>", "(accept only) variant chosen during review")
-    .action(async () => {
-      const out = makeOutput(`review.${sub}`, program.opts<GlobalFlags>());
-      await notYetImplemented(`review.${sub}`, out);
-      process.exit(1);
-    });
-}
+review
+  .command("in-flight")
+  .description("Bucket in-flight ideas by status")
+  .action(async () => {
+    const { runInFlight } = await import("../scripts/commands/review");
+    await runVerb("review.in-flight", {}, runInFlight, getFlags(program));
+  });
+review
+  .command("accept")
+  .description("Mark an idea as accepted")
+  .argument("<slug>")
+  .option("--note <text>")
+  .option("--variant <text>", "variant chosen during review")
+  .action(async (slug: string, opts) => {
+    const { runAccept } = await import("../scripts/commands/review");
+    await runVerb(
+      "review.accept",
+      { slug, note: opts.note, variant: opts.variant },
+      runAccept,
+      getFlags(program)
+    );
+  });
+review
+  .command("reject")
+  .description("Mark an idea as rejected")
+  .argument("<slug>")
+  .option("--note <text>")
+  .action(async (slug: string, opts) => {
+    const { runReject } = await import("../scripts/commands/review");
+    await runVerb("review.reject", { slug, note: opts.note }, runReject, getFlags(program));
+  });
+review
+  .command("thought")
+  .description("Mark needs-more-thought, increment loop counter")
+  .argument("<slug>")
+  .option("--note <text>")
+  .action(async (slug: string, opts) => {
+    const { runThought } = await import("../scripts/commands/review");
+    await runVerb("review.thought", { slug, note: opts.note }, runThought, getFlags(program));
+  });
 review
   .command("set")
-  .description("Set arbitrary status (advanced)")
+  .description("Set arbitrary status on an idea (advanced)")
   .argument("<slug>")
   .argument("<status>")
   .option("--note <text>")
-  .action(async () => {
-    const out = makeOutput("review.set", program.opts<GlobalFlags>());
-    await notYetImplemented("review.set", out);
-    process.exit(1);
+  .action(async (slug: string, status: string, opts) => {
+    const { runSet } = await import("../scripts/commands/review");
+    await runVerb(
+      "review.set",
+      { slug, status, note: opts.note },
+      runSet,
+      getFlags(program)
+    );
   });
 
+// ── ship ────────────────────────────────────────────────────────────
+program
+  .command("ship")
+  .description("Do the obvious next thing — pick an idea and graduate/resume it")
+  .argument("[slug]", "explicit idea slug")
+  .option("--variant <text>", "override variant choice")
+  .option("-y, --yes", "skip confirmation when auto-accepting")
+  .option("--dry", "preview the prompt without spawning")
+  .action(async (slug: string | undefined, opts) => {
+    const { run } = await import("../scripts/commands/ship");
+    await runVerb(
+      "ship",
+      { slug, variant: opts.variant, yes: !!opts.yes, dry: !!opts.dry },
+      run,
+      getFlags(program)
+    );
+  });
+
+// ── resume ──────────────────────────────────────────────────────────
+// Top-level alias for `harness build resume` for muscle memory.
+program
+  .command("resume")
+  .description("Recover a `building` idea by landing in-flight work")
+  .argument("[slug]", "idea slug (omitted: only/newest building idea)")
+  .option("--variant <text>")
+  .option("--dry")
+  .action(async (slug: string | undefined, opts) => {
+    const { runResume } = await import("../scripts/commands/build");
+    await runVerb(
+      "build.resume",
+      { slug, variant: opts.variant, dry: !!opts.dry },
+      runResume,
+      getFlags(program)
+    );
+  });
+
+// ── build ───────────────────────────────────────────────────────────
 const build = program.command("build").description("Build / resume / watch a single idea");
 build
   .command("start", { isDefault: true })
@@ -229,44 +257,138 @@ build
   .argument("<slug>")
   .option("--variant <text>")
   .option("--dry")
-  .action(async () => {
-    const out = makeOutput("build.start", program.opts<GlobalFlags>());
-    await notYetImplemented("build.start", out);
-    process.exit(1);
+  .action(async (slug: string, opts) => {
+    const { runStart } = await import("../scripts/commands/build");
+    await runVerb(
+      "build.start",
+      { slug, variant: opts.variant, dry: !!opts.dry },
+      runStart,
+      getFlags(program)
+    );
   });
 build
   .command("resume")
   .description("Land in-flight work on a `building` idea")
-  .argument("<slug>")
-  .action(async () => {
-    const out = makeOutput("build.resume", program.opts<GlobalFlags>());
-    await notYetImplemented("build.resume", out);
-    process.exit(1);
+  .argument("[slug]")
+  .option("--variant <text>")
+  .option("--dry")
+  .action(async (slug: string | undefined, opts) => {
+    const { runResume } = await import("../scripts/commands/build");
+    await runVerb(
+      "build.resume",
+      { slug, variant: opts.variant, dry: !!opts.dry },
+      runResume,
+      getFlags(program)
+    );
   });
 build
   .command("watch")
   .description("Tail the live event stream for an in-flight build")
   .argument("<slug>")
-  .action(async () => {
-    const out = makeOutput("build.watch", program.opts<GlobalFlags>());
-    await notYetImplemented("build.watch", out);
-    process.exit(1);
+  .action(async (slug: string) => {
+    const { runWatch } = await import("../scripts/commands/build");
+    await runVerb("build.watch", { slug }, runWatch, getFlags(program));
   });
 build
   .command("status")
   .description("Current state for one build")
   .argument("<slug>")
+  .action(async (slug: string) => {
+    const { runStatus } = await import("../scripts/commands/build");
+    await runVerb("build.status", { slug }, runStatus, getFlags(program));
+  });
+
+// ── cleanup ─────────────────────────────────────────────────────────
+program
+  .command("cleanup")
+  .description("Remove worktrees for shipped ideas")
+  .option("--apply", "actually remove (default: dry-run)")
+  .option("--include-rejected", "also clean up rejected ideas")
+  .option("--orphans", "also clean orphaned worktrees")
+  .action(async (opts) => {
+    const { run } = await import("../scripts/commands/cleanup");
+    await runVerb(
+      "cleanup",
+      {
+        apply: !!opts.apply,
+        includeRejected: !!opts.includeRejected,
+        orphans: !!opts.orphans,
+      },
+      run,
+      getFlags(program)
+    );
+  });
+
+// ── inspect ─────────────────────────────────────────────────────────
+program
+  .command("inspect")
+  .description("Show recent runs, idea counts, metrics, and project routing")
+  .option("--runs <n>", "number of runs to include", "5")
+  .option("--metric <name>", "filter to a single metric substring")
+  .action(async (opts) => {
+    const { run } = await import("../scripts/commands/inspect");
+    await runVerb(
+      "inspect",
+      { runs: parseInt(opts.runs, 10) || 5, metric: opts.metric },
+      run,
+      getFlags(program)
+    );
+  });
+
+// ── doctor ──────────────────────────────────────────────────────────
+program
+  .command("doctor")
+  .description("Check environment health (claude bin, gh, projects.yml, reminders)")
   .action(async () => {
-    const out = makeOutput("build.status", program.opts<GlobalFlags>());
-    await notYetImplemented("build.status", out);
+    const { run } = await import("../scripts/commands/doctor");
+    await runVerb("doctor", {}, run, getFlags(program));
+  });
+
+// ── completions ─────────────────────────────────────────────────────
+program
+  .command("completions")
+  .description("Emit a shell completion script (bash | zsh | fish)")
+  .argument("<shell>", "bash | zsh | fish")
+  .action(async (shellRaw: string) => {
+    const { run } = await import("../scripts/commands/completions");
+    if (shellRaw !== "bash" && shellRaw !== "zsh" && shellRaw !== "fish") {
+      const out = makeOutput("completions", getFlags(program));
+      out.error("BAD_INPUT", `Unsupported shell "${shellRaw}".`, {
+        hint: "Supported: bash | zsh | fish",
+      });
+      process.exit(1);
+    }
+    await runVerb("completions", { shell: shellRaw }, run, getFlags(program));
+  });
+
+// ── serve (phase 7 lands the body) ─────────────────────────────────
+program
+  .command("serve")
+  .description("Run as an MCP or HTTP server")
+  .option("--mcp", "MCP server over stdio")
+  .option("--http <addr>", "HTTP server bind, e.g. :7717")
+  .action(async (opts) => {
+    const out = makeOutput("serve", getFlags(program));
+    if (opts.mcp) {
+      try {
+        const mod: any = await import("../scripts/commands/serve" as any);
+        if (mod && typeof mod.run === "function") {
+          await runVerb("serve", { mcp: true }, mod.run, getFlags(program));
+          return;
+        }
+      } catch {
+        // not implemented yet
+      }
+      out.error("BAD_INPUT", "MCP server lands in phase 7.");
+      process.exit(1);
+    }
+    out.error("BAD_INPUT", "Pass --mcp (HTTP transport not yet implemented).", {
+      hint: "Phase 7 of proposals/next-gen-cli.md.",
+    });
     process.exit(1);
   });
 
-// ── Parse and run ───────────────────────────────────────────────────
-
 program.parseAsync(process.argv).catch((err) => {
-  // commander's own errors (unknown command, missing arg) are already
-  // pretty; we surface anything else as an envelope on stderr.
   const msg = (err as Error)?.message ?? String(err);
   process.stderr.write(`harness: ${msg}\n`);
   process.exit(2);

@@ -44,7 +44,7 @@ export async function graduateOne(
   if (opts.dry) {
     process.env.IDEA_HARNESS_BUILDER = "dry";
   } else if (intent === "build") {
-    // Fresh build: flip to `building` so a concurrent `npm run waiting` call
+    // Fresh build: flip to `building` so a concurrent `harness ideas waiting` call
     // sees the in-flight work. Resume already runs against `building` ideas;
     // no transition needed.
     setStatus(idea.slug, "building");
@@ -72,12 +72,12 @@ export async function graduateOne(
     log.error(`✗ ${idea.slug} ${intent} failed (exit ${result.exitCode}).`);
     log.error(`  stdout tail:\n${result.stdoutTail}`);
     log.error(`  stderr tail:\n${result.stderrTail}`);
-    log.error(`  Recovery: \`npm run resume ${idea.slug}\` to land any in-flight work on ${result.branch}.`);
+    log.error(`  Recovery: \`harness resume ${idea.slug}\` to land any in-flight work on ${result.branch}.`);
     setStatus(
       idea.slug,
       "building",
       `${intent === "resume" ? "Resume" : "Build"} did not reach PR at ${new Date().toISOString()} on ${result.branch}. ` +
-        `Run \`npm run resume ${idea.slug}\` to land the work, or inspect runs/${run.id}/build-${idea.slug}.{json,log}.`
+        `Run \`harness resume ${idea.slug}\` to land the work, or inspect runs/${run.id}/build-${idea.slug}.{json,log}.`
     );
     recordMetric(`${intent}.failed`, 1);
     return "failed";

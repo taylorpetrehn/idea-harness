@@ -25,6 +25,22 @@ import {
   HarnessEvent,
 } from "../lib/contracts";
 
+// Eager-import every verb module at load time so registerVerb() side
+// effects populate the registry before `harness contracts` walks it.
+// The CLI itself uses lazy imports for fast startup, but contracts is
+// the one verb that needs every other module's registration to have
+// run.
+import "./capture";
+import "./brainstorm";
+import "./ideas";
+import "./review";
+import "./ship";
+import "./build";
+import "./cleanup";
+import "./inspect";
+import "./doctor";
+import "./completions";
+
 export interface ContractsArgs {
   /** When true, include the envelope and event base schemas alongside verbs. */
   includeMeta?: boolean;

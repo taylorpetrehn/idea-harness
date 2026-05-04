@@ -1,7 +1,7 @@
 /**
  * scripts/lib/slug.ts
  *
- * Permissive slug matching for the user-facing CLIs (graduate / resume / ship).
+ * Permissive slug matching for the user-facing CLIs (build / resume / ship).
  *
  * Given a short string from the command line, find the unique idea it refers
  * to in a list of candidates. Match strategies, in order:
@@ -14,7 +14,7 @@
  * user disambiguate than silently pick one. Misses are also errors.
  *
  * Logs candidates to stderr on miss/ambiguity so the user can fix the input
- * without re-running `npm run waiting`.
+ * without re-running `harness ideas waiting`.
  */
 
 import { IdeaSummary } from "./ideas";

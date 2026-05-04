@@ -7,9 +7,9 @@
  * HEAD and the working tree of the directory the user has open in their
  * editor. Two real failure modes that drove this:
  *
- *   1. Concurrency. `npm run graduate -- --all` with two accepted ideas
- *      spawns two `claude` sessions in the same cwd; both run `git
- *      checkout -b …` and stomp HEAD.
+ *   1. Concurrency. Two concurrent `harness build` invocations spawn two
+ *      `claude` sessions in the same cwd; both run `git checkout -b …`
+ *      and stomp HEAD.
  *   2. Working-tree leakage. Any in-progress edit the user had open
  *      could be picked up by `git add` and end up in the PR.
  *
@@ -25,7 +25,7 @@
  *     recreate it from the remote branch tip (the in-flight edits are
  *     gone in that case, but the PR-only recovery still works).
  *   - listIdeaWorktrees(repo): every worktree under our managed dir.
- *   - remove(repo, path): tears one down. Used by `npm run cleanup`.
+ *   - remove(repo, path): tears one down. Used by `harness cleanup`.
  */
 
 import * as fs from "fs";
@@ -91,7 +91,7 @@ export async function prepareWorktree(args: PrepareWorktreeArgs): Promise<Worktr
   if (tracked) {
     log.warn(
       `worktree: existing worktree at ${wtPath} for fresh build — removing.` +
-        ` (Use \`npm run resume\` to recover an in-flight build instead.)`
+        ` (Use \`harness resume\` to recover an in-flight build instead.)`
     );
   }
   await scrubTracking(repoPathReal, wtPath);
