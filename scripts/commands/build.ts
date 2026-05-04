@@ -16,6 +16,7 @@ import { startRun, finalizeRun } from "../lib/runs";
 import { listIdeas, IdeaSummary } from "../lib/ideas";
 import { resolveIdeaShortSlug } from "../lib/slug";
 import { graduateOne, GraduateOutcome } from "../lib/graduator";
+import { openRunEvents } from "../lib/events";
 
 const RUNS_DIR = path.join(__dirname, "..", "..", "runs");
 
@@ -58,11 +59,18 @@ export async function runStart(args: BuildStartArgs, out: Output): Promise<void>
   }
 
   const runRec = startRun({ trigger: "build.start", flags: args });
-  const outcome = await graduateOne(idea, runRec, {
-    intent: "build",
-    variant: args.variant,
-    dry: args.dry,
-  });
+  const events = openRunEvents(runRec, "build.start", out);
+  let outcome: GraduateOutcome;
+  try {
+    outcome = await graduateOne(idea, runRec, {
+      intent: "build",
+      variant: args.variant,
+      dry: args.dry,
+      events,
+    });
+  } finally {
+    events.close();
+  }
   finalizeRun(runRec, { status: "complete", slug: idea.slug, intent: "build", outcome });
 
   emitOutcome(out, idea.slug, "build", outcome);
@@ -111,11 +119,18 @@ export async function runResume(args: BuildResumeArgs, out: Output): Promise<voi
   }
 
   const runRec = startRun({ trigger: "build.resume", flags: args });
-  const outcome = await graduateOne(idea, runRec, {
-    intent: "resume",
-    variant: args.variant,
-    dry: args.dry,
-  });
+  const events = openRunEvents(runRec, "build.resume", out);
+  let outcome: GraduateOutcome;
+  try {
+    outcome = await graduateOne(idea, runRec, {
+      intent: "resume",
+      variant: args.variant,
+      dry: args.dry,
+      events,
+    });
+  } finally {
+    events.close();
+  }
   finalizeRun(runRec, { status: "complete", slug: idea.slug, intent: "resume", outcome });
 
   emitOutcome(out, idea.slug, "resume", outcome);
@@ -132,6 +147,7 @@ const BuildStatusData = z.object({
   latest_run_id: z.string().nullable(),
   latest_artifact: z.unknown().nullable(),
   log_path: z.string().nullable(),
+  events_path: z.string().nullable(),
 });
 
 registerVerb({
@@ -148,11 +164,12 @@ export async function runStatus(args: BuildStatusArgs, out: Output): Promise<voi
     return;
   }
 
-  const { runId, artifact, logPath } = findLatestBuildArtifact(idea.slug);
+  const { runId, artifact, logPath, eventsPath } = findLatestBuildArtifact(idea.slug);
   if (out.mode === "pretty") {
     out.stdout(`${idea.slug}  [${idea.status}]\n`);
     if (idea.github_pr) out.stdout(`  PR: ${idea.github_pr}\n`);
     if (runId) out.stdout(`  latest run: ${runId}\n`);
+    if (eventsPath) out.stdout(`  events: ${eventsPath}\n`);
     if (logPath) out.stdout(`  log: ${logPath}\n`);
   }
 
@@ -161,6 +178,7 @@ export async function runStatus(args: BuildStatusArgs, out: Output): Promise<voi
     latest_run_id: runId,
     latest_artifact: artifact,
     log_path: logPath,
+    events_path: eventsPath,
   });
 }
 
@@ -189,26 +207,36 @@ export async function runWatch(args: BuildWatchArgs, out: Output): Promise<void>
     out.error("NOT_FOUND", `No idea matches "${args.slug}".`);
     return;
   }
-  const { logPath } = findLatestBuildArtifact(idea.slug);
-  if (!logPath || !fs.existsSync(logPath)) {
+  const { logPath, eventsPath } = findLatestBuildArtifact(idea.slug);
+  // Prefer events.ndjson when present — it's structured and replays cleanly
+  // in --ndjson mode. Fall back to the raw log for older runs.
+  const followPath = eventsPath ?? logPath;
+  if (!followPath || !fs.existsSync(followPath)) {
     out.error("NOT_FOUND", `No build log found for ${idea.slug}.`, {
       hint: "The build may not have started yet, or it ran in offline/dry mode.",
     });
     return;
   }
 
-  if (out.mode === "pretty") {
-    // Pretty mode: actively follow the file (`tail -f`-equivalent) until
-    // the user interrupts. Agents should pass --json (which short-circuits
-    // and just returns the path).
-    await tailFile(logPath, (line) => out.stdout(line));
-    out.result({ slug: idea.slug, log_path: logPath, followed: true });
+  if (out.mode === "pretty" || out.mode === "ndjson") {
+    // Pretty mode: tail and render. ndjson mode: forward each line through
+    // out.event() so the consumer gets a clean event stream.
+    await tailFile(followPath, (line) => {
+      if (out.mode === "ndjson" && eventsPath) {
+        // Each line is already a JSON-encoded HarnessEvent — write it
+        // verbatim to stdout to avoid double-encoding.
+        process.stdout.write(line);
+      } else {
+        out.stdout(line);
+      }
+    });
+    out.result({ slug: idea.slug, log_path: followPath, followed: true });
     return;
   }
 
   out.result(
-    { slug: idea.slug, log_path: logPath, followed: false },
-    `Tail the log directly: \`tail -f ${logPath}\``
+    { slug: idea.slug, log_path: followPath, followed: false },
+    `Tail directly: \`tail -f ${followPath}\``
   );
 }
 
@@ -243,10 +271,11 @@ interface BuildArtifact {
   runId: string | null;
   artifact: unknown | null;
   logPath: string | null;
+  eventsPath: string | null;
 }
 
 function findLatestBuildArtifact(slug: string): BuildArtifact {
-  if (!fs.existsSync(RUNS_DIR)) return { runId: null, artifact: null, logPath: null };
+  if (!fs.existsSync(RUNS_DIR)) return { runId: null, artifact: null, logPath: null, eventsPath: null };
   const runs = fs
     .readdirSync(RUNS_DIR)
     .filter((name) => fs.statSync(path.join(RUNS_DIR, name)).isDirectory())
@@ -256,7 +285,8 @@ function findLatestBuildArtifact(slug: string): BuildArtifact {
     const dir = path.join(RUNS_DIR, id);
     const artPath = path.join(dir, `build-${slug}.json`);
     const logPath = path.join(dir, `build-${slug}.log`);
-    if (fs.existsSync(artPath) || fs.existsSync(logPath)) {
+    const eventsPath = path.join(dir, "events.ndjson");
+    if (fs.existsSync(artPath) || fs.existsSync(logPath) || fs.existsSync(eventsPath)) {
       const artifact = fs.existsSync(artPath)
         ? safeParse(fs.readFileSync(artPath, "utf8"))
         : null;
@@ -264,10 +294,11 @@ function findLatestBuildArtifact(slug: string): BuildArtifact {
         runId: id,
         artifact,
         logPath: fs.existsSync(logPath) ? logPath : null,
+        eventsPath: fs.existsSync(eventsPath) ? eventsPath : null,
       };
     }
   }
-  return { runId: null, artifact: null, logPath: null };
+  return { runId: null, artifact: null, logPath: null, eventsPath: null };
 }
 
 function safeParse(s: string): unknown {

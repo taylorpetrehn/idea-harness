@@ -21,6 +21,7 @@ import { critique } from "../agents/critic";
 import { checkBrainstormSchema } from "../lib/schema";
 import { writeRunArtifact, finalizeRun, startRun, Run } from "../lib/runs";
 import { recordMetric } from "../lib/metrics";
+import { openRunEvents, RunEvents } from "../lib/events";
 
 export interface BrainstormArgs {
   idea?: string;
@@ -78,8 +79,9 @@ async function validateAndCommit(args: {
   run: Run;
   brainstormResult: BrainstormResult;
   out: Output;
+  events: RunEvents;
 }): Promise<Outcome> {
-  const { item, run, out } = args;
+  const { item, run, out, events } = args;
   const slug = item.slug;
   let current = args.brainstormResult;
   let revisionUsed = false;
@@ -98,10 +100,10 @@ async function validateAndCommit(args: {
       });
       writeRunArtifact(run, `critic-${slug}-${phase}.json`, critic);
       recordMetric("critic.tokens", critic.tokensUsed);
-      out.event("critic.verdict", { slug, verdict: critic.verdict });
+      events.emit("critic.verdict", { slug, verdict: critic.verdict });
     } else {
       out.warn(`Schema check failed for ${slug}: ${schema.failures.length} issue(s).`);
-      out.event("schema.fail", { slug, failures: schema.failures.length });
+      events.emit("schema.fail", { slug, failures: schema.failures.length });
       recordMetric("schema.fail", 1);
     }
 
@@ -110,7 +112,7 @@ async function validateAndCommit(args: {
       try {
         await current.commit();
         recordMetric(revisionUsed ? "brainstorm.pass_after_revision" : "brainstorm.pass", 1);
-        out.event("brainstorm.committed", { slug });
+        events.emit("brainstorm.committed", { slug });
         return "passed";
       } catch (err) {
         out.warn(`Commit refused for ${slug}: ${(err as Error).message}`);
@@ -130,7 +132,7 @@ async function validateAndCommit(args: {
       try {
         await current.commitAsNeedsCriticReview(feedback);
         recordMetric("brainstorm.escalated", 1);
-        out.event("brainstorm.escalated", { slug });
+        events.emit("brainstorm.escalated", { slug });
         return "escalated";
       } catch (err) {
         out.warn(`Commit refused for ${slug}: ${(err as Error).message}`);
@@ -143,7 +145,7 @@ async function validateAndCommit(args: {
     const revised = await brainstorm(item, run, { feedback });
     writeRunArtifact(run, `brainstorm-${slug}-r2.json`, brainstormArtifact(revised));
     recordMetric("brainstorm.tokens", revised.tokensUsed);
-    out.event("brainstorm.tokens", { slug, tokens: revised.tokensUsed });
+    events.emit("brainstorm.tokens", { slug, tokens: revised.tokensUsed });
 
     if (!revised.output.trim()) {
       out.warn(`Empty revision output for ${slug} — leaving raw, will retry.`);
@@ -157,12 +159,26 @@ async function validateAndCommit(args: {
 
 export async function run(args: BrainstormArgs, out: Output): Promise<void> {
   const r = startRun({ trigger: "manual", flags: args });
+  const events = openRunEvents(r, "brainstorm", out);
 
+  try {
+    return await runImpl(args, out, r, events);
+  } finally {
+    events.close();
+  }
+}
+
+async function runImpl(
+  args: BrainstormArgs,
+  out: Output,
+  r: Run,
+  events: RunEvents
+): Promise<void> {
   out.info("Planning run…");
   const runPlan: RunPlan = await plan({ run: r, focusSlug: args.idea });
   writeRunArtifact(r, "plan.json", runPlan);
 
-  out.event("plan.ready", {
+  events.emit("plan.ready", {
     harvest: runPlan.harvest.length,
     brainstorm: runPlan.brainstorm.length,
     skip: runPlan.skip.length,
@@ -209,7 +225,7 @@ export async function run(args: BrainstormArgs, out: Output): Promise<void> {
   }
 
   for (const item of runPlan.harvest) {
-    out.event("harvest.start", { title: item.title });
+    events.emit("harvest.start", { title: item.title });
     await harvest(item, r);
   }
 
@@ -218,7 +234,7 @@ export async function run(args: BrainstormArgs, out: Output): Promise<void> {
   for (const item of runPlan.brainstorm) {
     const slug = item.slug;
     out.info(`Brainstorming: ${slug}`);
-    out.event("brainstorm.start", { slug });
+    events.emit("brainstorm.start", { slug });
 
     let result: BrainstormResult;
     try {
@@ -235,9 +251,9 @@ export async function run(args: BrainstormArgs, out: Output): Promise<void> {
     }
     writeRunArtifact(r, `brainstorm-${slug}.json`, brainstormArtifact(result));
     recordMetric("brainstorm.tokens", result.tokensUsed);
-    out.event("brainstorm.tokens", { slug, tokens: result.tokensUsed });
+    events.emit("brainstorm.tokens", { slug, tokens: result.tokensUsed });
 
-    const outcome = await validateAndCommit({ item, run: r, brainstormResult: result, out });
+    const outcome = await validateAndCommit({ item, run: r, brainstormResult: result, out, events });
     if (outcome === "passed") passed++;
     else if (outcome === "escalated") escalated++;
   }

@@ -33,6 +33,7 @@ import { Run, writeRunArtifact } from "../lib/runs";
 import { loadProjects, ProjectConfig } from "../lib/projects";
 import { setStatusInFile, IdeaSummary, listIdeas, appendNote } from "../lib/ideas";
 import { prepareWorktree } from "../lib/worktree";
+import { RunEvents } from "../lib/events";
 import { log } from "../lib/log";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
@@ -60,6 +61,13 @@ export interface BuildOptions {
    *                     reach the commit step (e.g. a permission gate, a network blip).
    */
   intent?: "build" | "resume";
+  /**
+   * Optional event sink. When provided, the builder emits structured
+   * lifecycle events (build.worktree.ready, build.spawn, build.stdout
+   * chunks, build.exit) into runs/<id>/events.ndjson so `harness build
+   * watch` can render a clean stream instead of raw stdout.
+   */
+  events?: RunEvents;
 }
 
 type Mode = "live" | "offline" | "dry";
@@ -223,9 +231,16 @@ export async function build(
   }
 
   // ── Live mode: prepare worktree, then spawn claude inside it ─────────
+  const events = opts.events;
   let worktree;
   try {
     worktree = await prepareWorktree({ repoPath, branch, baseBranch, intent });
+    events?.emit("build.worktree.ready", {
+      slug: idea.slug,
+      worktree_path: worktree.path,
+      branch,
+      reused: worktree.reused,
+    });
   } catch (err) {
     const msg = `Worktree preparation failed: ${(err as Error).message}`;
     log.error(`  ${msg}`);
@@ -264,15 +279,33 @@ export async function build(
   log.info(`  Worktree: ${worktree.path}${worktree.reused ? " (reused)" : " (fresh)"}`);
   log.info(`  Live output: tail -f ${logPath}`);
 
+  events?.emit("build.spawn", {
+    slug: idea.slug,
+    cwd: worktree.path,
+    branch,
+    base_branch: baseBranch,
+    log_path: logPath,
+  });
+
   const result = await spawnClaude({
     cwd: worktree.path,
     userPrompt,
     systemPrompt,
     logPath,
+    onChunk: events
+      ? (stream, chunk) => events.emit("build.stdout", { slug: idea.slug, stream, chunk })
+      : undefined,
   });
 
   const prUrl = parsePrUrl(result.stdout);
   const status: BuildResult["status"] = prUrl ? "pr-open" : "failed";
+
+  events?.emit("build.exit", {
+    slug: idea.slug,
+    exit_code: result.exitCode,
+    pr_url: prUrl,
+    status,
+  });
 
   writeRunArtifact(run, `build-${idea.slug}.json`, {
     slug: idea.slug,
@@ -499,6 +532,7 @@ async function spawnClaude(args: {
   userPrompt: string;
   systemPrompt: string;
   logPath: string;
+  onChunk?: (stream: "stdout" | "stderr", chunk: string) => void;
 }): Promise<SpawnResult> {
   const bin = claudeBin();
 
@@ -559,12 +593,14 @@ async function spawnClaude(args: {
       stdout += s;
       logStream.write(s);
       process.stderr.write(s);
+      args.onChunk?.("stdout", s);
     });
     child.stderr.on("data", (chunk) => {
       const s = chunk.toString("utf8");
       stderr += s;
       logStream.write(s);
       process.stderr.write(s);
+      args.onChunk?.("stderr", s);
     });
 
     child.on("error", (err) => finish(null, new Error(`Failed to spawn claude: ${err.message}`)));

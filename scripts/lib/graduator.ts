@@ -19,6 +19,7 @@ import { Run, writeRunArtifact } from "./runs";
 import { setStatus, IdeaSummary } from "./ideas";
 import { recordMetric } from "./metrics";
 import { build, recordPrOnIdea } from "../agents/builder";
+import { RunEvents } from "./events";
 import { log } from "./log";
 
 export interface GraduateOptions {
@@ -28,6 +29,8 @@ export interface GraduateOptions {
   variant?: string;
   /** Don't actually spawn — just print the prompt. Implies dry mode in the builder. */
   dry?: boolean;
+  /** Optional event sink — when present the builder lifecycle is mirrored to events.ndjson. */
+  events?: RunEvents;
 }
 
 export type GraduateOutcome = "passed" | "failed" | "dry" | "crashed";
@@ -39,7 +42,10 @@ export async function graduateOne(
 ): Promise<GraduateOutcome> {
   const intent = opts.intent ?? "build";
   const verb = intent === "resume" ? "Resuming" : "Graduating";
+  const events = opts.events;
   log.info(`${verb} ${idea.slug}…`);
+
+  events?.emit("build.requested", { slug: idea.slug, intent, variant: opts.variant ?? null });
 
   if (opts.dry) {
     process.env.IDEA_HARNESS_BUILDER = "dry";
@@ -49,20 +55,27 @@ export async function graduateOne(
     // no transition needed.
     setStatus(idea.slug, "building");
     recordMetric("build.started", 1);
+    events?.emit("build.started", { slug: idea.slug });
   }
 
   try {
-    const result = await build(idea, run, { variant: opts.variant, intent });
+    const result = await build(idea, run, { variant: opts.variant, intent, events });
 
     if (result.status === "pr-open" && result.pr_url) {
       recordPrOnIdea(idea, result.pr_url);
       log.info(`✓ ${idea.slug} → ${result.pr_url}`);
       recordMetric(intent === "resume" ? "resume.pr_open" : "build.pr_open", 1);
+      events?.emit("build.pr_open", {
+        slug: idea.slug,
+        pr_url: result.pr_url,
+        branch: result.branch,
+      });
       return "passed";
     }
 
     if (result.status === "dry") {
       log.info(`(dry) ${idea.slug} prompt prepared.`);
+      events?.emit("build.dry", { slug: idea.slug });
       return "dry";
     }
 
@@ -80,6 +93,12 @@ export async function graduateOne(
         `Run \`harness resume ${idea.slug}\` to land the work, or inspect runs/${run.id}/build-${idea.slug}.{json,log}.`
     );
     recordMetric(`${intent}.failed`, 1);
+    events?.emit("build.failed", {
+      slug: idea.slug,
+      intent,
+      branch: result.branch,
+      exit_code: result.exitCode,
+    });
     return "failed";
   } catch (err) {
     log.error(`✗ ${idea.slug} crashed:`, err);
@@ -95,6 +114,11 @@ export async function graduateOne(
       setStatus(idea.slug, "accepted", `Build crashed: ${(err as Error).message}`);
     }
     recordMetric(`${intent}.crashed`, 1);
+    events?.emit("build.crashed", {
+      slug: idea.slug,
+      intent,
+      message: (err as Error).message,
+    });
     return "crashed";
   }
 }

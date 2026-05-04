@@ -15,6 +15,7 @@ import { resetLoopCount } from "../lib/loops";
 import { recordMetric } from "../lib/metrics";
 import { resolveIdeaShortSlug } from "../lib/slug";
 import { graduateOne } from "../lib/graduator";
+import { openRunEvents } from "../lib/events";
 
 export interface ShipArgs {
   slug?: string;
@@ -129,11 +130,18 @@ export async function run(args: ShipArgs, out: Output): Promise<void> {
   out.info(`${intent === "resume" ? "Resuming" : "Shipping"} ${idea.slug}…`);
 
   const runRec = startRun({ trigger: "ship", flags: args });
-  const outcome = await graduateOne(idea, runRec, {
-    intent,
-    variant: args.variant,
-    dry: args.dry,
-  });
+  const events = openRunEvents(runRec, "ship", out);
+  let outcome;
+  try {
+    outcome = await graduateOne(idea, runRec, {
+      intent,
+      variant: args.variant,
+      dry: args.dry,
+      events,
+    });
+  } finally {
+    events.close();
+  }
   finalizeRun(runRec, { status: "complete", slug: idea.slug, intent, outcome });
 
   // Re-read the idea to surface the post-build PR URL if any.
