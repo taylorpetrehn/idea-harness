@@ -60,7 +60,7 @@ loop_count: 0                                 # # of needs-more-thought cycles
             ↓       ↓        ↓
         accepted  rejected  needs-more-thought (loop_count++)
             ↓                    ↓
-       [npm run graduate]   (rebrew until loop_count == 3)
+       [harness build]      (rebrew until loop_count == 3)
             ↓                    ↓
         building            (escalate to Taylor on 3rd bounce)
             ↓ [builder spawns claude in repo]
@@ -74,7 +74,7 @@ loop_count: 0                                 # # of needs-more-thought cycles
 | `raw` | Captured, not yet brainstormed |
 | `brainstormed` | Schema + critic passed, awaiting Taylor's reaction |
 | `needs-critic-review` | Schema or critic escalated — Taylor sees a flagged brainstorm |
-| `accepted` | Taylor said yes — ready for `npm run graduate` |
+| `accepted` | Taylor said yes — ready for `harness build` |
 | `rejected` | Taylor said no — archived, never deleted |
 | `needs-more-thought` | Taylor isn't ready, loop_count increments |
 | `building` | Builder is spawning a Claude session in the target repo |

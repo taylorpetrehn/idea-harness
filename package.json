@@ -1,27 +1,27 @@
 {
   "name": "idea-harness",
-  "version": "1.0.0",
-  "description": "A purpose-built harness for capturing, brainstorming, and graduating LetsBarker ideas",
+  "version": "2.0.0-alpha.1",
+  "description": "A purpose-built harness for capturing, brainstorming, and shipping ideas as real PRs",
+  "bin": {
+    "harness": "./bin/harness.ts"
+  },
   "scripts": {
-    "garden": "ts-node scripts/garden.ts",
-    "garden:dry": "ts-node scripts/garden.ts -- --dry-run",
-    "waiting": "ts-node scripts/review.ts list",
-    "review": "ts-node scripts/review.ts",
-    "status": "ts-node scripts/review.ts",
-    "graduate": "ts-node scripts/graduate.ts",
-    "ship": "ts-node scripts/ship.ts",
-    "resume": "ts-node scripts/resume.ts",
-    "cleanup": "ts-node scripts/cleanup.ts",
-    "inspect": "ts-node scripts/inspect.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "commander": "^13.0.0",
+    "zod": "^3.23.8"
+  },
   "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.30.0"
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.3.0"
+    "tsx": "^4.19.2",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.8"
   }
 }

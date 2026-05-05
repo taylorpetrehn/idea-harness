@@ -52,9 +52,9 @@ Three ways to start a run. All produce the same downstream behavior.
 
 | Trigger | Use case | Entry point |
 |---|---|---|
-| Manual | "I want to process my ideas now" | `npm run garden` |
-| Conversational | "What ideas are waiting for me?" | Claude reads `ideas/` directly |
-| Event (optional) | New Reminder detected via Shortcut | webhook → `npm run garden` |
+| Manual | "I want to process my ideas now" | `harness brainstorm` |
+| Conversational | "What ideas are waiting for me?" | Claude calls `harness review next --json` |
+| Event (optional) | New Reminder detected via Shortcut | webhook → `harness capture --from reminders` |
 
 The harness **never runs on a timer**. Empty cron loops were the original sin
 of the previous pipeline.
@@ -284,9 +284,9 @@ After every status change, write to the file immediately. Never batch.
 
 ## L6: Build — The Builder
 
-`npm run graduate <slug>` is the bridge from accepted idea to real PR.
+`harness build <slug>` is the bridge from accepted idea to real PR.
 Implemented in `scripts/agents/builder.ts` and orchestrated by
-`scripts/graduate.ts`.
+`scripts/commands/build.ts` (which delegates to `scripts/lib/graduator.ts`).
 
 **What it does:**
 
@@ -326,12 +326,12 @@ constraints + no-merge + no-force-push rules to bound risk. (This is how
 the dm-cohorts-d2e3 build got blocked the first time — `acceptEdits` lets
 edits through but still gates Bash; that's the wrong shape for this job.)
 
-**Recovery: `npm run resume`:**
+**Recovery: `harness resume`:**
 
 If a build session implements changes but doesn't reach the PR (network
 hiccup, CI agent killed, prior permission gate before bypassPermissions
 landed), the idea stays at status `building` with a `## Notes` line
-pointing to the run log. `npm run resume <slug>` re-spawns Claude in the
+pointing to the run log. `harness resume <slug>` re-spawns Claude in the
 worktree with a different system prompt: "the branch already has
 uncommitted work, just commit/push/PR." It does not re-implement.
 
@@ -341,17 +341,17 @@ Every build runs in a git worktree, never in the user's main checkout.
 Default location is `<repo-parent>/<repo-basename>-worktrees/<branch-flat>`.
 Three reasons:
 
-1. **Concurrency.** `npm run graduate -- --all` with two accepted ideas
-   spawns two sessions; without worktrees both would `cd` to the same
-   directory and stomp HEAD on each other's `git checkout -b`.
+1. **Concurrency.** Concurrent builds can spawn two sessions; without
+   worktrees both would `cd` to the same directory and stomp HEAD on
+   each other's `git checkout -b`.
 2. **Working-tree isolation.** Without a worktree, an in-progress edit
    sitting in your primary checkout could be picked up by the builder's
    `git add` and end up in the PR. The worktree is clean by construction.
 3. **Clean recovery.** Crashes leave the worktree dirty, not the repo.
-   `npm run resume` reuses the same worktree; in-flight changes are still
+   `harness resume` reuses the same worktree; in-flight changes are still
    there.
 
-Cleanup is opt-in: `npm run cleanup` shows what's eligible (worktrees of
+Cleanup is opt-in: `harness cleanup` shows what's eligible (worktrees of
 ideas at `shipped`); `--apply` actually removes. Nothing auto-deletes.
 
 **Modes (env: `IDEA_HARNESS_BUILDER`):**
@@ -363,13 +363,13 @@ ideas at `shipped`); `--apply` actually removes. Nothing auto-deletes.
 **Status flow:**
 
 ```
-accepted ──[npm run graduate]──> building ──[claude session]──> pr-open ──[merge]──> shipped
-                                    │
-                                    └──[failure]──> accepted (re-queueable)
+accepted ──[harness build]──> building ──[claude session]──> pr-open ──[merge]──> shipped
+                                 │
+                                 └──[failure]──> building (recover with `harness resume`)
 ```
 
-The `npm run review in-flight` command surfaces accepted / building / pr-open
-ideas so a quick check tells you what's still moving through the pipeline.
+`harness review in-flight` surfaces accepted / building / pr-open ideas so a
+quick check tells you what's still moving through the pipeline.
 
 ---
 
@@ -388,7 +388,7 @@ ideas so a quick check tells you what's still moving through the pipeline.
               ↓        ↓        ↓
           accepted  rejected  needs-more-thought
               ↓                    ↓
-       [npm run graduate]     (loop counter++)
+       [harness build]     (loop counter++)
               ↓                    ↓
           building             (rebrew on next run, until counter=3)
               ↓ [claude session in repo]
@@ -404,36 +404,46 @@ they're searchable context for future decisions and never auto-deleted.
 
 ## Running It
 
+The harness is a single binary. After `npm install && npm link`, every
+verb is `harness <verb>`. Append `--json` for a single envelope or
+`--ndjson` for a streaming event log — same surface for humans and agents.
+
 ```bash
 # Full harness run: harvest → plan → brainstorm → schema + critic
-npm run garden
+harness brainstorm
 
 # Show ideas waiting for review
-npm run waiting
+harness ideas waiting
+harness review next --json          # JSON envelope for one idea
 
-# Conversational review CLI (Claude calls these during the chat review)
-npm run review next                       # JSON for the next idea
-npm run review accept <slug> [note]       # mark accepted
-npm run review reject <slug> [note]
-npm run review thought <slug> [note]
-npm run review in-flight                  # accepted / building / pr-open
+# Conversational review (Claude calls these during the chat review)
+harness review accept <slug> [--note "..."] [--variant N]
+harness review reject <slug> [--note "..."]
+harness review thought <slug> [--note "..."]
+harness review in-flight            # accepted / building / pr-open
 
 # Ship the next eligible idea (no slug needed)
-npm run ship                              # picks newest accepted, or auto-accepts brainstormed
-npm run ship <slug>                       # explicit
-npm run ship -- --yes                     # don't prompt for auto-accept confirmation
+harness ship                        # picks newest accepted, or auto-accepts brainstormed
+harness ship <slug>                 # explicit
+harness ship --yes                  # skip the auto-accept prompt
 
 # Or step-by-step
-npm run graduate <slug>                   # accepted → PR (fresh build)
-npm run graduate <slug> --variant=v2      # override variant choice
-npm run graduate <slug> --dry             # preview the build prompt
-npm run graduate -- --all                 # graduate every accepted idea
-npm run resume <slug>                     # recover a `building` idea whose session died
+harness build <slug>                # accepted → PR (fresh build)
+harness build <slug> --variant v2   # override variant choice
+harness build <slug> --dry          # preview the build prompt
+harness resume <slug>               # land in-flight work on a `building` idea
+harness build watch <slug>          # tail the live session log
 
 # Slugs accept unique prefix or substring (`dm-cohorts` is fine).
 
 # Inspect run history + metrics
-npm run inspect
+harness inspect
+
+# Environment health check
+harness doctor
+
+# JSON Schema for every verb's data shape
+harness contracts --json
 ```
 
 ---

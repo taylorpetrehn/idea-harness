@@ -1,6 +1,6 @@
 # Contract: Handoff to the Builder (L6)
 
-Defines what an `accepted` idea must contain before `npm run graduate <slug>`
+Defines what an `accepted` idea must contain before `harness build <slug>`
 will hand it off to the builder.
 
 The builder spawns a Claude Code session inside the target repo's working
@@ -23,7 +23,7 @@ decided_at: <ISO 8601>                         # MUST be set
 github_pr: ~                                   # populated by the builder on success
 ```
 
-If any required field is missing, `npm run graduate` exits non-zero and
+If any required field is missing, `harness build` exits non-zero and
 prints which fields are missing. Status reverts to `brainstormed` so it
 re-surfaces in the review queue.
 

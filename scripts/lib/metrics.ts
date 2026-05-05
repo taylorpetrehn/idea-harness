@@ -3,7 +3,7 @@
  *
  * Rolling counters at state/metrics.json. Cheap, file-backed, additive only.
  * Used to track accept rate, time-to-decision, escalation rate over time —
- * surfaced by `npm run inspect`.
+ * surfaced by `harness inspect`.
  */
 
 import * as fs from "fs";

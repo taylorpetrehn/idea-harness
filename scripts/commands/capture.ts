@@ -1,0 +1,154 @@
+/**
+ * scripts/commands/capture.ts
+ *
+ * `harness capture` — add a new idea to the harness.
+ *
+ * Sources are pluggable; see scripts/lib/sources/. Selected with --from
+ * (default: text if positional args are given, otherwise reminders).
+ */
+
+import * as fs from "fs";
+import * as path from "path";
+import * as crypto from "crypto";
+import { z } from "zod";
+import { Output } from "../lib/output";
+import { registerVerb } from "../lib/contracts";
+import { slugify } from "../lib/text";
+import { resolveProject } from "../lib/projects";
+import { getSource, listSources, RawCapture } from "../lib/sources";
+
+const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
+
+export interface CaptureArgs {
+  text?: string[];
+  from?: string;
+  project?: string;
+}
+
+const CapturedIdea = z.object({
+  slug: z.string(),
+  filename: z.string(),
+  id: z.string(),
+  title: z.string(),
+  project: z.string(),
+});
+
+const CaptureData = z.object({
+  source: z.string(),
+  captured: z.array(CapturedIdea),
+  count: z.number(),
+});
+
+registerVerb({
+  verb: "capture",
+  description: "Capture a new idea from CLI text, stdin, or an external source.",
+  data: CaptureData,
+});
+
+function newId(): string {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+function writeIdea(c: RawCapture, defaultSource: string): z.infer<typeof CapturedIdea> {
+  const id = newId();
+  const slug = `${slugify(c.title)}-${id.slice(0, 4)}`;
+  const filepath = path.join(IDEAS_DIR, `${slug}.md`);
+  const project = c.project ?? resolveProject(c.title, c.notes ?? "") ?? "letsbarker";
+  const sourceLabel = c.external_id ? defaultSource : defaultSource === "reminders" ? "reminders" : "capture";
+
+  const content = `---
+id: ${id}
+title: "${c.title.replace(/"/g, '\\"')}"
+status: raw
+source: ${sourceLabel}
+project: ${project}
+captured_at: ${new Date().toISOString()}
+brainstormed_at: ~
+decided_at: ~
+github_issue: ~
+github_pr: ~
+loop_count: 0
+---
+
+## Raw Idea
+
+${c.title}
+${c.notes ? "\n## Notes\n\n" + c.notes + "\n" : ""}
+## Brainstorm
+
+<!-- Filled by the brainstormer. -->
+`;
+
+  if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
+  fs.writeFileSync(filepath, content, "utf8");
+
+  return { slug, filename: `${slug}.md`, id, title: c.title, project };
+}
+
+export async function run(args: CaptureArgs, out: Output): Promise<void> {
+  const explicitText = (args.text ?? []).join(" ").trim();
+  const sourceId = args.from ?? (explicitText ? "text" : "reminders");
+  const source = getSource(sourceId);
+
+  if (!source) {
+    const available = listSources()
+      .filter((s) => s.available())
+      .map((s) => s.id)
+      .join(" | ");
+    out.error("BAD_INPUT", `Unknown source "${sourceId}".`, {
+      hint: `Available: ${available || "(none)"}`,
+    });
+    return;
+  }
+
+  if (!source.available()) {
+    out.error("ENV_MISSING", `Source "${sourceId}" is not available in this environment.`, {
+      hint: sourceId === "reminders"
+        ? "Reminders requires macOS (and System Settings → Privacy → Automation access)."
+        : "Check the source's prerequisites.",
+    });
+    return;
+  }
+
+  let items: RawCapture[];
+  try {
+    items = await source.fetch({ project: args.project, raw: explicitText || undefined });
+  } catch (err) {
+    out.error("BAD_INPUT", (err as Error).message, {
+      hint: "Run `harness doctor` to check the source's environment.",
+    });
+    return;
+  }
+
+  if (items.length === 0) {
+    out.result(
+      { source: source.id, captured: [], count: 0 },
+      sourceId === "reminders"
+        ? "Reminders list empty."
+        : "Nothing to capture from that source."
+    );
+    return;
+  }
+
+  const captured: z.infer<typeof CapturedIdea>[] = [];
+  for (const c of items) {
+    const rec = writeIdea(c, source.id);
+    captured.push(rec);
+    out.event("capture.created", { slug: rec.slug, project: rec.project, source: source.id });
+    if (source.acknowledge) {
+      try {
+        await source.acknowledge(c);
+      } catch (err) {
+        out.warn(`Source acknowledge failed for "${c.title}": ${(err as Error).message}`);
+      }
+    }
+    if (out.mode === "pretty") {
+      out.stdout(`✓ ${rec.slug}  [${rec.project}]  ${rec.title}\n`);
+    }
+  }
+
+  out.result(
+    { source: source.id, captured, count: captured.length },
+    "Next: `harness brainstorm` to process the new idea(s)."
+  );
+}

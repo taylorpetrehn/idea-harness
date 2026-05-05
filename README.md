@@ -7,7 +7,7 @@ review (conversational, in Claude), graduate (Claude Code spawned in the
 target repo, opens a PR).
 
 This is **the** idea system — there is no separate build pipeline. The
-brainstorm IS the spec. `npm run graduate <slug>` hands an accepted idea
+brainstorm IS the spec. `harness build <slug>` hands an accepted idea
 to a fresh Claude Code session inside the target repo's working directory
 and lets it explore the codebase, implement the chosen variant on a
 feature branch, and open the PR.
@@ -20,40 +20,52 @@ cp context/product.example.md   context/product.md
 cp context/decisions.example.md context/decisions.md
 $EDITOR context/product.md context/decisions.md   # fill them in
 
-# 2. Install deps
+# 2. Install deps and link the binary
 npm install
+npm link             # makes `harness` available on PATH
 
-# 3. Run a full harness pass: harvest reminders → brainstorm → schema + critic
-npm run garden
+# 3. Verify your environment
+harness doctor
 
-# 4. Review ideas conversationally in Claude (mobile or desktop)
+# 4. Run a full harness pass: harvest → brainstorm → schema + critic
+harness brainstorm
+
+# 5. Review ideas conversationally in Claude (mobile or desktop)
 #    Just ask: "What ideas are waiting for me?"
 #    Or hit the CLI directly:
-npm run waiting
+harness ideas waiting
 
-# 5. Ship the next eligible idea — no slug needed.
+# 6. Ship the next eligible idea — no slug needed.
 #    Picks the newest accepted (or auto-accepts a brainstormed one),
 #    or resumes a `building` idea whose previous session didn't reach PR.
-npm run ship
+harness ship
 
 # Equivalent step-by-step if you want explicit control:
-npm run review accept <slug>     # mark accepted
-npm run graduate <slug>          # spawn Claude in target repo, open PR
-npm run resume <slug>            # recover a stuck `building` idea
+harness review accept <slug>     # mark accepted
+harness build <slug>             # spawn Claude in target repo, open PR
+harness resume <slug>             # recover a stuck `building` idea
 
-# Slugs accept a unique prefix or substring, so `npm run resume dm-cohorts`
+# Slugs accept a unique prefix or substring, so `harness resume dm-cohorts`
 # resolves to the long capture as long as it's unambiguous.
 
-# 6. Track in-flight work
-npm run review in-flight    # shows accepted / building / pr-open
-npm run inspect             # rolling metrics + last-run summary
-
-# 7. Build sessions stream live to runs/<id>/build-<slug>.log.
-#    The path is printed when graduate/ship/resume starts — `tail -f` it.
+# 7. Track in-flight work
+harness review in-flight     # accepted / building / pr-open
+harness inspect              # rolling metrics + last-run summary
+harness build watch <slug>   # tail a live build session
 
 # 8. Cleanup worktrees for shipped ideas (dry-run by default)
-npm run cleanup             # shows what would be removed
-npm run cleanup -- --apply  # actually remove
+harness cleanup              # shows what would be removed
+harness cleanup --apply      # actually remove
+```
+
+### Agent-friendly output
+
+Every verb supports `--json` (single envelope) and `--ndjson` (event
+stream). The envelope is stable as `harness/v1`; pin it. Get every
+verb's JSON Schema with:
+
+```bash
+harness contracts --json
 ```
 
 ## Worktrees
@@ -66,10 +78,10 @@ Override the parent dir with `IDEA_HARNESS_WORKTREE_DIR`.
 
 This means:
 - You can keep working in your primary checkout while a build runs.
-- Concurrent builds (`npm run graduate -- --all`) don't trample HEAD.
-- Crashes leave the worktree dirty, not your repo. `npm run resume <slug>`
+- Concurrent builds don't trample HEAD (each gets its own worktree).
+- Crashes leave the worktree dirty, not your repo. `harness resume <slug>`
   picks the worktree back up where the prior session left off.
-- After a PR merges, run `npm run cleanup -- --apply` to delete worktrees
+- After a PR merges, run `harness cleanup --apply` to delete worktrees
   for shipped ideas. Nothing's deleted automatically.
 
 > `context/product.md` and `context/decisions.md` are gitignored on purpose —
@@ -94,7 +106,7 @@ STATE — durable artifacts in ideas/ and runs/
    ↓
 REVIEW — Taylor reacts conversationally → accept / reject / needs-more-thought
    ↓
-BUILD — `npm run graduate` spawns Claude Code in the target repo, opens a PR
+BUILD — `harness build <slug>` spawns Claude Code in the target repo, opens a PR
 ```
 
 See `SKILL.md` for the full design and `contracts/` for the machine-checkable
@@ -117,14 +129,21 @@ idea-harness/
     handoff-to-build.md             ← what idea-to-pr expects
   references/
     idea-schema.md                  ← idea file frontmatter + body
+  bin/
+    harness.ts                      ← single binary entrypoint (commander)
   scripts/
-    garden.ts                       ← orchestrator (capture → review)
-    graduate.ts                     ← orchestrator (accepted → PR)
-    ship.ts                         ← "do the next thing" — picks an idea, ships it
-    resume.ts                       ← recover a stuck `building` idea
-    cleanup.ts                      ← remove worktrees for shipped ideas
-    review.ts                       ← conversational review CLI helpers
-    inspect.ts                      ← view latest run + metrics
+    commands/                       ← one file per verb, each exporting `run(args, out)`
+      capture.ts                    ← add an idea (text | --from reminders|stdin)
+      brainstorm.ts                 ← orchestrator (capture → review)
+      ideas.ts                      ← list / show / waiting
+      review.ts                     ← next / in-flight / accept / reject / thought / set
+      ship.ts                       ← do the next obvious thing
+      build.ts                      ← start / resume / watch / status
+      cleanup.ts                    ← remove worktrees for shipped ideas
+      inspect.ts                    ← view recent runs + metrics
+      doctor.ts                     ← env health check
+      completions.ts                ← bash/zsh/fish completion script
+      contracts.ts                  ← emit JSON Schema for every verb
     agents/
       initializer.ts                ← L2: plans the run
       harvester.ts                  ← Reminders → raw idea files
@@ -132,15 +151,17 @@ idea-harness/
       critic.ts                     ← L5: gates output (qualitative)
       builder.ts                    ← L6: spawns claude in worktree, opens PR
     lib/
+      output.ts                     ← pretty / --json / --ndjson abstraction
+      contracts.ts                  ← Zod schemas + verb-contract registry
       ideas.ts                      ← idea file read/write
       runs.ts                       ← run lifecycle
       context.ts                    ← Tier 1/2/3 loading
       schema.ts                     ← deterministic brainstorm schema check
       worktree.ts                   ← git worktree lifecycle for builds
-      graduator.ts                  ← shared worker for graduate/ship/resume
+      graduator.ts                  ← shared worker for build/ship/resume
       slug.ts                       ← permissive slug matching
       llm.ts                        ← model adapters
-      reminders.ts                  ← Reminders MCP adapter
+      reminders.ts                  ← Reminders adapter (osascript)
       loops.ts                      ← loop detection
       projects.ts                   ← project routing
       budgets.ts                    ← token budget policy
@@ -153,7 +174,7 @@ idea-harness/
 
 ## What's Wired Up
 
-The scaffold ships with all adapters fully implemented — `npm run garden:dry`
+The scaffold ships with all adapters fully implemented — `harness brainstorm --dry`
 runs end-to-end without code changes. What you do still need is the
 *environment* the harness runs in:
 
@@ -183,7 +204,7 @@ runs end-to-end without code changes. What you do still need is the
   back to the model up to `IDEA_HARNESS_TIER2_MAX_REQUESTS` (default 3).
 
 For real runs: set `ANTHROPIC_API_KEY`, ensure the Reminders app has a list
-called "App Ideas", then `npm run garden`.
+called "App Ideas", then `harness brainstorm`.
 
 ## Environment Variables
 
