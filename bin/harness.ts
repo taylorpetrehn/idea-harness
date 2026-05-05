@@ -285,9 +285,10 @@ build
   .command("watch")
   .description("Tail the live event stream for an in-flight build")
   .argument("<slug>")
-  .action(async (slug: string) => {
+  .option("--demo", "render the TUI with synthetic events (no live build needed)")
+  .action(async (slug: string, opts) => {
     const { runWatch } = await import("../scripts/commands/build");
-    await runVerb("build.watch", { slug }, runWatch, getFlags(program));
+    await runVerb("build.watch", { slug, demo: !!opts.demo }, runWatch, getFlags(program));
   });
 build
   .command("status")

@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "commander": "^13.0.0",
+    "ink": "^7.0.1",
+    "ink-spinner": "^5.0.0",
+    "react": "^19.2.5",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
@@ -20,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/react": "^19.2.14",
     "tsx": "^4.19.2",
     "typescript": "^5.3.0",
     "vitest": "^2.1.8"
