@@ -133,13 +133,15 @@ than appearing to "quit the harness session."
 
 ## Smoke coverage
 
-15+ dedicated smoke files in `_dashboard/_smoke_*.ts`, plus the
-static render demo `_smoke.ts`. Run them all at once:
+16 dedicated smoke files in `_dashboard/_smoke_*.ts`, plus the
+static render demo `_smoke.ts`. Run them all via npm or directly:
 
 ```bash
-tsx scripts/commands/_dashboard/_smoke_all.ts
-tsx scripts/commands/_dashboard/_smoke_all.ts --quick    # skip build (faster)
-tsx scripts/commands/_dashboard/_smoke_all.ts --verbose  # dump stderr on failures
+npm test                                              # full suite
+npm run test:quick                                    # skip build smoke
+npm run test:verbose                                  # dump stderr on failures
+npm run check                                         # tsc + smokes
+tsx scripts/commands/_dashboard/_smoke_all.ts         # equivalent to `npm test`
 ```
 
 Or run an individual suite:
@@ -161,12 +163,13 @@ tsx scripts/commands/_dashboard/_smoke_edge.ts        # cold start, missing dirs
 tsx scripts/commands/_dashboard/_smoke_why.ts         # verdict rationale
 tsx scripts/commands/_dashboard/_smoke_search.ts      # `/` text search
 tsx scripts/commands/_dashboard/_smoke_empty.ts       # filtered vs genuine empty-state
+tsx scripts/commands/_dashboard/_smoke_cli.ts         # --json/--ndjson contract
 ```
 
-160+ assertions total, all currently passing. Each smoke creates and
-cleans up its own scratch artifacts (run dirs, idea files, journal
-entries via `purgeJournalForSlug`) so re-running them never leaves
-state behind.
+175 assertions total, all currently passing (16 suites in ~33s).
+Each smoke creates and cleans up its own scratch artifacts (run
+dirs, idea files, journal entries via `purgeJournalForSlug`) so
+re-running them never leaves state behind.
 
 ## Gotchas
 
