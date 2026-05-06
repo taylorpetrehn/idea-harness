@@ -52,6 +52,10 @@ export interface DashboardCallbacks {
    *  Callback is synchronous so the dashboard's tick refresh picks it up
    *  on the next pass without exiting the renderer. */
   onCapture(text: string): { slug: string; project: string } | null;
+  /** Spawn a harness verb in the background. Returning runs (brainstorm,
+   *  ship) will surface in IN FLIGHT once their events.ndjson appears.
+   *  Quick verbs (doctor) return a one-line summary to display inline. */
+  onSpawnVerb(verb: string): { detached: boolean; message?: string };
 }
 
 // ── selection model ─────────────────────────────────────────────────
@@ -583,6 +587,8 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const [projectFilter, setProjectFilter] = React.useState<string | null>(null);
   const [capturing, setCapturing] = React.useState<boolean>(false);
   const [captureBuffer, setCaptureBuffer] = React.useState<string>("");
+  const [paletteOpen, setPaletteOpen] = React.useState<boolean>(false);
+  const [paletteCursor, setPaletteCursor] = React.useState<number>(0);
 
   const fleetRef = React.useRef<WatcherFleet | null>(null);
   if (!fleetRef.current) fleetRef.current = new WatcherFleet();
@@ -692,8 +698,48 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     [selected, ideaBySlug, projects.length]
   );
 
+  // Palette options. Each entry runs as a child of the harness CLI;
+  // long-running ones (brainstorm/ship) produce a runs/<id>/events.ndjson
+  // that the dashboard's IN FLIGHT zone will pick up live.
+  const paletteOptions: { verb: string; label: string; hint: string }[] = [
+    { verb: "brainstorm",  label: "brainstorm",  hint: "score new captures into brainstormed ideas" },
+    { verb: "ship",        label: "ship",        hint: "build the next obvious idea (--yes)" },
+    { verb: "doctor",      label: "doctor",      hint: "env health check (quick)" },
+    { verb: "cleanup",     label: "cleanup",     hint: "remove worktrees for shipped ideas (dry-run)" },
+  ];
+
   // Keyboard
   useInput((input, key) => {
+    // Palette mode: arrow nav + Enter to spawn + Esc to close.
+    if (paletteOpen) {
+      if (key.escape) { setPaletteOpen(false); setMessage(null); return; }
+      if (key.upArrow || input === "k") {
+        setPaletteCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        setPaletteCursor((c) => Math.min(paletteOptions.length - 1, c + 1));
+        return;
+      }
+      if (key.return) {
+        const choice = paletteOptions[paletteCursor];
+        setPaletteOpen(false);
+        if (!choice) return;
+        try {
+          const result = callbacks.onSpawnVerb(choice.verb);
+          if (result.message) {
+            setMessage(result.message);
+          } else if (result.detached) {
+            setMessage(`◆ spawned harness ${choice.verb} — watch IN FLIGHT.`);
+          }
+        } catch (err) {
+          setMessage(`spawn failed: ${(err as Error).message}`);
+        }
+        return;
+      }
+      return;
+    }
+
     // Capture-input mode swallows almost everything — only Esc cancels and
     // Enter submits. Other keys append to the buffer.
     if (capturing) {
@@ -740,6 +786,12 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     if (input === "c") {
       setCapturing(true);
       setCaptureBuffer("");
+      setMessage(null);
+      return;
+    }
+    if (input === ":") {
+      setPaletteOpen(true);
+      setPaletteCursor(0);
       setMessage(null);
       return;
     }
@@ -972,6 +1024,23 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
               )}
             </Text>
           </Box>
+        ) : paletteOpen ? (
+          <Box paddingX={1} flexDirection="column">
+            <Text color="magenta" bold>: run a verb</Text>
+            {paletteOptions.map((opt, i) => {
+              const sel = i === paletteCursor;
+              return (
+                <Box key={opt.verb}>
+                  <Text color={sel ? "cyan" : "gray"}>{sel ? "▸ " : "  "}</Text>
+                  <Text bold={sel} color={sel ? "white" : undefined}>
+                    {opt.label.padEnd(12)}
+                  </Text>
+                  <Text color="gray">  {opt.hint}</Text>
+                </Box>
+              );
+            })}
+            <Text color="gray" dimColor>↑↓ navigate · enter run · esc cancel</Text>
+          </Box>
         ) : (
           <FooterBar hints={hints} message={message} narrow={narrow} cols={cols} />
         )}
@@ -1014,6 +1083,7 @@ function buildHints(
 
   // Universal navigation hints
   base.push({ key: "c", label: "capture" });
+  base.push({ key: ":", label: "run verb" });
   base.push({ key: "tab", label: "next zone" });
   if (hasProjects) base.push({ key: "p", label: "project" });
   base.push({ key: "q", label: "quit" });

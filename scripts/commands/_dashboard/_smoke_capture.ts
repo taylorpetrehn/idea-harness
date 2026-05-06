@@ -87,6 +87,7 @@ async function main() {
           createdSlugs.push(created.slug);
           return { slug: created.slug, project: created.project };
         },
+        onSpawnVerb: () => ({ detached: false }),
       },
       onAction: () => {},
     }),

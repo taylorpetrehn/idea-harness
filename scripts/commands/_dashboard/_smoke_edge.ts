@@ -81,6 +81,7 @@ async function main() {
             onReject: () => {},
             onNeedsMoreThought: () => {},
             onCapture: () => null,
+            onSpawnVerb: () => ({ detached: false }),
           },
           onAction: () => {},
         }),

@@ -102,20 +102,25 @@ async function main() {
 
   // Poll for the new run dir and inspect mid-flight. We need to catch the
   // narrow window between startRun (creates events.ndjson) and finalizeRun
-  // (writes summary.json) — offline mode runs in tens of milliseconds, so
-  // poll aggressively.
+  // (writes summary.json) — offline mode can complete in <5ms on a hot
+  // disk cache, so use setImmediate spin instead of setInterval which has
+  // a ~1ms floor in node and can miss the window entirely.
   let midFlightRun: ReturnType<typeof dataMod.scanActiveRuns>[number] | undefined;
-  const watchInterval = setInterval(() => {
+  let polling = true;
+  const spin = () => {
+    if (!polling) return;
     const active = dataMod.scanActiveRuns(RUNS_DIR);
     const fresh = active.find((r) => !runsBefore.has(r.runId));
     if (fresh && !midFlightRun) midFlightRun = fresh;
-  }, 5);
+    setImmediate(spin);
+  };
+  spin();
 
   const childExit: Promise<{ code: number | null }> = new Promise((resolve) => {
     child.on("exit", (code) => resolve({ code }));
   });
   const exitInfo = await childExit;
-  clearInterval(watchInterval);
+  polling = false;
 
   // Locate the new run dir.
   const newRunIds = safeReaddir(RUNS_DIR).filter((id) => !runsBefore.has(id));

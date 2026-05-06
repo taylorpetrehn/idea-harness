@@ -16,7 +16,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 
 import {
   IdeaSummary,
@@ -95,6 +95,7 @@ export async function run(_args: DashboardArgs, out: Output): Promise<void> {
           const created = createRawIdea({ title: text, project, source: "dashboard" });
           return { slug: created.slug, project: created.project };
         },
+        onSpawnVerb: (verb) => spawnVerbFromDashboard(verb),
       },
     });
 
@@ -200,6 +201,56 @@ function safeReaddir(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Spawn a harness verb from the inline `:` palette. Long-running verbs
+ * are detached so they keep running after the dashboard re-renders;
+ * their events.ndjson surfaces in IN FLIGHT once the run dir lands.
+ * Quick informational verbs run sync and return their stdout summary.
+ */
+function spawnVerbFromDashboard(verb: string): { detached: boolean; message?: string } {
+  const detachedVerbs = new Set(["brainstorm", "ship", "cleanup"]);
+  const syncVerbs = new Set(["doctor"]);
+
+  if (detachedVerbs.has(verb)) {
+    const args = [HARNESS_BIN, "--ndjson", verb];
+    if (verb === "ship") args.push("--yes");
+    const child = spawn(TSX_BIN, args, {
+      cwd: ROOT,
+      stdio: "ignore",
+      env: process.env,
+      detached: true,
+    });
+    child.unref();
+    return { detached: true };
+  }
+
+  if (syncVerbs.has(verb)) {
+    // Doctor is fast (<1s); capture its envelope and surface a one-line
+    // summary so the user gets feedback without leaving the dashboard.
+    const result = spawnSync(TSX_BIN, [HARNESS_BIN, "--json", verb], {
+      cwd: ROOT,
+      env: process.env,
+      timeout: 10_000,
+      encoding: "utf8",
+    });
+    const tail = (result.stdout ?? "").trim().split("\n").pop() ?? "";
+    try {
+      const env = JSON.parse(tail);
+      const ok = env.ok === true;
+      return {
+        detached: false,
+        message: ok
+          ? `✓ ${verb} ok${env.hint ? `: ${env.hint}` : ""}`
+          : `✗ ${verb} ${env.error?.code ?? "failed"}: ${env.error?.message ?? ""}`,
+      };
+    } catch {
+      return { detached: false, message: `${verb} returned non-JSON output.` };
+    }
+  }
+
+  return { detached: false, message: `unknown verb: ${verb}` };
 }
 
 async function waitForNewEventsFile(
