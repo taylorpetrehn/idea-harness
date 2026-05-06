@@ -213,6 +213,22 @@ review
     );
   });
 
+// ── reply ───────────────────────────────────────────────────────────
+program
+  .command("reply")
+  .description("Answer the most recent Open Question the sharpener posed to an idea")
+  .argument("<slug>")
+  .argument("<answer...>", "the answer text (multiple words allowed without quoting)")
+  .action(async (slug: string, answerParts: string[]) => {
+    const { runReply } = await import("../scripts/commands/reply");
+    await runVerb(
+      "reply",
+      { slug, answer: answerParts.join(" ") },
+      runReply,
+      getFlags(program)
+    );
+  });
+
 // ── ship ────────────────────────────────────────────────────────────
 program
   .command("ship")

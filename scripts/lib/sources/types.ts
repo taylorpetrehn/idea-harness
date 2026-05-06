@@ -29,4 +29,13 @@ export interface Source {
   fetch(opts?: { project?: string; raw?: string }): Promise<RawCapture[]>;
   /** Optional: mark a capture handled in the upstream system (Reminders → mark complete). */
   acknowledge?(capture: RawCapture): Promise<void>;
+  /**
+   * Optional: surface text back at the original capture. Used by the
+   * scope-sharpener (Phase 2) to push a clarifying question to the
+   * reminder/email/issue that originated the idea so the user can
+   * answer it where they brain-dumped it. Returns true on success
+   * (delivered upstream), false on dry-mode / no-op / failure — the
+   * caller treats false as "harness body is the only surface".
+   */
+  writeBack?(capture: RawCapture, text: string): Promise<boolean>;
 }

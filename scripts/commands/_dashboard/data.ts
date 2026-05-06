@@ -212,6 +212,11 @@ export interface BrainstormSections {
   variants: { label: string; body: string }[];
   topRisks: string[];
   ifAcceptedBuild: string | null;
+  /** The most recent `## Open Question` the sharpener appended (Phase 2).
+   *  Null if no question is pending. The dashboard renders a `❓` glyph
+   *  when this is non-null and the `harness reply <slug>` verb consumes
+   *  it. */
+  openQuestion: string | null;
 }
 
 export function parseBrainstormSections(filepath: string): BrainstormSections {
@@ -219,7 +224,10 @@ export function parseBrainstormSections(filepath: string): BrainstormSections {
   try {
     content = fs.readFileSync(filepath, "utf8");
   } catch {
-    return { problem: null, why: null, variants: [], topRisks: [], ifAcceptedBuild: null };
+    return {
+      problem: null, why: null, variants: [], topRisks: [],
+      ifAcceptedBuild: null, openQuestion: null,
+    };
   }
 
   const problem = extractSection(content, "Problem");
@@ -228,6 +236,7 @@ export function parseBrainstormSections(filepath: string): BrainstormSections {
     extractSection(content, "Risks and open questions") ?? extractSection(content, "Risks");
   const ifAcceptedBuild = matchBoldLabel(content, "If accepted, build");
   const why = matchBoldLabel(content, "Why");
+  const openQuestionBlock = extractLastSection(content, "Open Question");
 
   return {
     problem: problem ? firstParagraph(problem) : null,
@@ -235,16 +244,29 @@ export function parseBrainstormSections(filepath: string): BrainstormSections {
     variants: variantsBlock ? parseVariants(variantsBlock) : [],
     topRisks: risksBlock ? parseBullets(risksBlock).slice(0, 3) : [],
     ifAcceptedBuild,
+    openQuestion: openQuestionBlock ? firstParagraph(openQuestionBlock) : null,
   };
 }
 
 function extractSection(content: string, heading: string): string | null {
   const re = new RegExp(
-    `^#{2,3}\\s+${escapeRegex(heading)}\\s*\\n([\\s\\S]*?)(?=^#{2,3}\\s+|\\Z)`,
+    `^#{2,3}\\s+${escapeRegex(heading)}\\s*\\n([\\s\\S]*?)(?=^#{2,3}\\s+|$(?![\\s\\S]))`,
     "im"
   );
   const m = content.match(re);
   return m ? m[1].trim() : null;
+}
+
+/** Same as extractSection but returns the LAST match. The sharpener
+ *  appends `## Open Question` blocks and we want the most recent one. */
+function extractLastSection(content: string, heading: string): string | null {
+  const re = new RegExp(
+    `^#{2,3}\\s+${escapeRegex(heading)}\\s*\\n([\\s\\S]*?)(?=^#{2,3}\\s+|$(?![\\s\\S]))`,
+    "img"
+  );
+  let last: string | null = null;
+  for (const m of content.matchAll(re)) last = m[1].trim();
+  return last;
 }
 
 function firstParagraph(s: string): string {
@@ -336,6 +358,10 @@ export interface TodayEntry {
    *  than the human. The renderer surfaces a `⚡` glyph so the user
    *  always sees what the machine decided. */
   autoFlowed?: boolean;
+  /** True when the sharpener (Phase 2) appended a clarifying question
+   *  to the idea body. Drives the `❓` glyph in the lifecycle trail and
+   *  the AWAITING YOU row prefix. */
+  sharpened?: boolean;
 }
 
 /**
@@ -383,6 +409,7 @@ export function buildTodayFeed(
       if (eDetailIsUrl && !dupDetailIsUrl) dup.detail = e.detail;
       else if (!dup.detail && e.detail) dup.detail = e.detail;
       if (e.autoFlowed) dup.autoFlowed = true;
+      if (e.sharpened) dup.sharpened = true;
       continue;
     }
     deduped.push(e);
@@ -411,6 +438,10 @@ export interface LifecycleEntry {
   /** True if any transition in the trail was auto-flowed by the engine.
    *  Drives the `⚡` glyph in the lifecycle row + NEXT bar prefix. */
   autoFlowed?: boolean;
+  /** True if the sharpener appended a clarifying question for this
+   *  idea in the current window. Drives the `❓` glyph in the trail
+   *  and the AWAITING YOU row prefix. */
+  sharpened?: boolean;
 }
 
 /**
@@ -460,6 +491,7 @@ export function buildTodayLifecycle(
       entry.prUrl = e.detail;
     }
     if (e.autoFlowed) entry.autoFlowed = true;
+    if (e.sharpened) entry.sharpened = true;
     if (!entry.title && e.title) entry.title = e.title;
   }
 
@@ -539,6 +571,18 @@ function mapJournalEntry(
     const kind: TodayEntry["kind"] =
       to === "accepted" ? "accepted" : to === "rejected" ? "rejected" : "other";
     return { ts: e.ts, kind, slug, title, autoFlowed: true };
+  }
+  if (e.type === "idea.sharpened") {
+    // Sharpened ideas pivot around the brainstormed kind in the trail —
+    // the question lands after the brainstorm, before any human decision.
+    return {
+      ts: e.ts,
+      kind: "brainstormed",
+      slug,
+      title,
+      sharpened: true,
+      detail: typeof e.data?.question === "string" ? e.data.question : undefined,
+    };
   }
   return null;
 }

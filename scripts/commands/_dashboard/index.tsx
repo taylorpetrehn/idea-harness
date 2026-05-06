@@ -336,6 +336,7 @@ function AwaitRow({
   narrow,
   cols,
   ideasDir,
+  hasOpenQuestion,
 }: {
   idea: IdeaSummary;
   selected: boolean;
@@ -343,12 +344,15 @@ function AwaitRow({
   narrow: boolean;
   cols: number;
   ideasDir: string;
+  /** True when the sharpener has appended a clarifying question
+   *  to this idea — drives the `❓` row prefix. */
+  hasOpenQuestion?: boolean;
 }) {
   const glyph = actionGlyph(idea.recommended_action);
   const conf = idea.confidence ? `${idea.confidence} conf` : "low signal";
   const verdict = idea.recommended_action ?? "no verdict";
   // Title gets one row's width minus the row gutter and glyphs.
-  const titleBudget = Math.max(20, cols - 6);
+  const titleBudget = Math.max(20, cols - 6 - (hasOpenQuestion ? 2 : 0));
 
   // Pre-compose the metadata strip as a single string so Ink doesn't wrap
   // each fragment independently and split words like "letsbark / er".
@@ -365,6 +369,7 @@ function AwaitRow({
     <Box flexDirection="column" paddingLeft={2}>
       <Box>
         <Text color={selected ? "cyan" : "gray"}>{selected ? "▸ " : "  "}</Text>
+        {hasOpenQuestion ? <Text color="yellow" bold>❓ </Text> : null}
         <Text color={glyph.color}>{glyph.glyph} </Text>
         <Text bold={selected}>{truncate(idea.title, titleBudget)}</Text>
       </Box>
@@ -432,6 +437,13 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
             <Text color="green">  {truncate(sections.ifAcceptedBuild, cap - 2)}</Text>
           </>
         ) : null}
+        {sections.openQuestion ? (
+          <>
+            <Text color="yellow" dimColor>open ❓</Text>
+            <Text color="yellow">  {truncate(sections.openQuestion, cap - 2)}</Text>
+            <Text color="gray" dimColor>{`  reply: harness reply ${idea.slug} "…"`}</Text>
+          </>
+        ) : null}
       </Box>
     );
   }
@@ -491,6 +503,18 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
           <Text color="green">{truncate(sections.ifAcceptedBuild, cap)}</Text>
         </Text>
       ) : null}
+      {sections.openQuestion ? (
+        <>
+          <Text>
+            <Text color="yellow" dimColor>{pad("open ❓")}</Text>
+            <Text color="yellow">{truncate(sections.openQuestion, cap)}</Text>
+          </Text>
+          <Text>
+            <Text color="gray" dimColor>{pad("")}</Text>
+            <Text color="gray" dimColor>{truncate(`reply: harness reply ${idea.slug} "…"`, cap)}</Text>
+          </Text>
+        </>
+      ) : null}
     </Box>
   );
 }
@@ -543,6 +567,12 @@ export function buildTrailGlyphs(entry: LifecycleEntry): string[] {
       out.push("⚡");
     }
     out.push(todayGlyph(k).glyph);
+    // ❓ lands AFTER the brainstormed glyph: the sharpener fires once
+    // the brainstorm body is committed, so visually the question marks
+    // the moment between "brainstormed" and any human/engine decision.
+    if (entry.sharpened && k === "brainstormed") {
+      out.push("❓");
+    }
   }
   return out;
 }
@@ -1350,6 +1380,7 @@ function DashboardZones(p: DashboardZonesProps) {
     ideaBySlug, state, selected, expandedAwait, ideasDir,
   } = p;
   const autoFlowedSlugs = new Set(today.filter((e) => e.autoFlowed).map((e) => e.slug));
+  const sharpenedSlugs = new Set(today.filter((e) => e.sharpened).map((e) => e.slug));
   const nextAutoFlowed = !!next && autoFlowedSlugs.has(next.idea.slug);
   return (
     <>
@@ -1409,6 +1440,7 @@ function DashboardZones(p: DashboardZonesProps) {
               narrow={narrow}
               cols={cols}
               ideasDir={ideasDir}
+              hasOpenQuestion={sharpenedSlugs.has(i.slug)}
             />
           );
         })

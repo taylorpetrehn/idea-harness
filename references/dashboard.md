@@ -89,6 +89,11 @@ same instant render as `↓💭` not `💭↓`.
        AWAITING YOU empty state swaps inbox-zero copy for an
        auto-flow tally. See README "Auto-flow" for the full
        semantics. |
+| `❓` | scope sharpener appended a clarifying question — injected
+       AFTER the brainstormed glyph (e.g., `↓💭❓`) and as a row
+       prefix on AWAITING YOU. The detail pane shows the question
+       text and the exact `harness reply <slug>` invocation. See
+       README "Scope sharpener" for the full semantics. |
 
 `scanActiveRuns` flags runs as `stalled: true` when their latest
 event is > 5 minutes old. The renderer paints these with `⏸`

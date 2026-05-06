@@ -6,7 +6,7 @@
  */
 
 import { Source, RawCapture } from "./types";
-import { listReminders, completeReminder } from "../reminders";
+import { listReminders, completeReminder, appendToReminder } from "../reminders";
 
 const id = "reminders" as const;
 
@@ -30,5 +30,11 @@ export const RemindersSource: Source = {
   async acknowledge(capture: RawCapture): Promise<void> {
     if (!capture.external_id) return;
     await completeReminder(capture.external_id);
+  },
+
+  async writeBack(capture: RawCapture, text: string): Promise<boolean> {
+    if (!this.available()) return false;
+    if (!capture.external_id) return false;
+    return appendToReminder(capture.external_id, text);
   },
 };

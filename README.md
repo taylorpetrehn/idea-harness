@@ -299,6 +299,7 @@ called "App Ideas", then `harness brainstorm`.
 | `IDEA_HARNESS_PER_IDEA_TARGET` | soft token target per brainstorm | 10000 |
 | `IDEA_HARNESS_PER_RUN_CAP` | hard run-level token cap | 100000 |
 | `IDEA_HARNESS_AUTO_FLOW` | when `true`, the brainstormer auto-promotes high-confidence accept/reject verdicts past the human gate (see "Auto-flow" below) | `false` |
+| `IDEA_HARNESS_AUTO_SHARPEN` | when `true`, `needs-more-thought` brainstorms trigger the sharpener (see "Scope sharpener" below) | `false` |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info`, `debug` | `info` |
 
 ## Auto-flow
@@ -326,6 +327,42 @@ The dashboard surfaces auto-flow visibly:
 - AWAITING YOU empty state: when auto-flow has handled ideas, the
   inbox-zero message swaps to "auto-flow handled N ideas — press
   [enter] to see TODAY".
+
+## Scope sharpener
+
+When the brainstormer commits a `needs-more-thought` verdict and
+`IDEA_HARNESS_AUTO_SHARPEN=true`, the harness invokes a small follow-up
+agent that:
+
+- Reads the brainstorm's `Risks and open questions` + `Why` lines.
+- Asks the LLM (cheap critic-class transport) for the SINGLE
+  highest-leverage clarifying question.
+- Appends an `## Open Question` section to the idea body.
+- Best-effort writes the question back to the originating capture
+  (Apple Reminders → appended to the reminder body) so the user can
+  answer it where they brain-dumped the idea.
+
+The idea status stays at `brainstormed` — the sharpener never
+auto-decides anything. To answer the question:
+
+```
+harness reply <slug> "your answer here"
+```
+
+`reply` appends a `### Reply` block under the most recent Open
+Question, bumps `loop_count`, and journals `idea.replied`. Re-run
+`harness brainstorm` (or wait for the next pass) and the brainstormer
+will see the answer in the body and produce a fresh verdict.
+
+The dashboard surfaces the sharpener via:
+
+- `❓` row prefix + trail glyph in TODAY (e.g., `↓💭❓`) for ideas
+  with a pending question.
+- AWAITING YOU detail pane shows the question text + the exact
+  `harness reply` invocation to copy.
+
+The sharpener is opt-in. Default off. Failure (LLM error, write-back
+failure) is logged and never breaks the brainstorm commit.
 
 ## Why This Shape
 

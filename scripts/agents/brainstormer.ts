@@ -27,6 +27,7 @@ import { callBrainstormerModel } from "../lib/llm";
 import { setStatusInFile, appendNote, parseVerdict } from "../lib/ideas";
 import { appendJournal } from "../lib/journal";
 import { log } from "../lib/log";
+import { sharpen } from "./sharpener";
 import { BUDGETS } from "../lib/budgets";
 
 const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
@@ -213,6 +214,7 @@ export async function brainstorm(
       setStatusInFile(filepath, "brainstormed");
       log.info(`    ✓ Wrote brainstorm to ${path.basename(filepath)}`);
       maybeAutoFlow(filepath, output);
+      await maybeSharpen(filepath, output);
     },
 
     commitAsNeedsCriticReview: async (feedback: string) => {
@@ -265,6 +267,23 @@ function extractFrontmatterValue(text: string, key: string): string | null {
   if (!m) return null;
   const v = m[1].trim().replace(/^"|"$/g, "");
   return v === "~" ? null : v;
+}
+
+/**
+ * If `IDEA_HARNESS_AUTO_SHARPEN=true` and the just-committed brainstorm
+ * verdict is `needs-more-thought`, run the sharpener so the idea body
+ * gains a clarifying question and the originating Reminder gets a
+ * write-back. Failure is logged and swallowed — never breaks commit.
+ */
+async function maybeSharpen(filepath: string, output: string): Promise<void> {
+  if (process.env.IDEA_HARNESS_AUTO_SHARPEN !== "true") return;
+  const verdict = parseVerdict(output);
+  if (verdict.recommended_action !== "needs-more-thought") return;
+  try {
+    await sharpen(filepath);
+  } catch (err) {
+    log.warn(`    sharpener failed for ${path.basename(filepath)}: ${(err as Error).message}`);
+  }
 }
 
 /**
