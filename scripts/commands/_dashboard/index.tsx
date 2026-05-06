@@ -47,6 +47,10 @@ export interface DashboardCallbacks {
   onAccept(slug: string): void;
   onReject(slug: string): void;
   onNeedsMoreThought(slug: string): void;
+  /** Persist a fresh raw idea from the dashboard's inline capture input.
+   *  Callback is synchronous so the dashboard's tick refresh picks it up
+   *  on the next pass without exiting the renderer. */
+  onCapture(text: string): { slug: string; project: string } | null;
 }
 
 // ── selection model ─────────────────────────────────────────────────
@@ -393,19 +397,27 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
     );
   }
 
-  // Wide: gutter + content on same line.
+  // Wide: gutter + content on the same line. Each row is a SINGLE Text
+  // with nested colored spans — Ink's Yoga collapses trailing whitespace
+  // between adjacent <Text> siblings, which was eating the space between
+  // "variants" and "1." and producing a blank line between Boxes when
+  // their content brushed the column width. Nesting inside one Text gives
+  // a predictable continuous string.
+  //
+  // Indent budget: AwaitRow paddingLeft (2) + AwaitDetail paddingLeft (4)
+  // = 6 chars consumed before our content begins.
   const gutter = 9;
-  const cap = Math.max(30, cols - 4 - gutter - 1);
+  const cap = Math.max(30, cols - 2 - 4 - gutter - 1);
   const pad = (label: string) =>
     label + " ".repeat(Math.max(1, gutter - label.length));
 
   return (
     <Box flexDirection="column" paddingLeft={4} marginTop={0}>
       {sections.problem ? (
-        <Box>
+        <Text>
           <Text color="gray" dimColor>{pad("problem")}</Text>
-          <Text>{truncate(sections.problem, cap)}</Text>
-        </Box>
+          {truncate(sections.problem, cap)}
+        </Text>
       ) : null}
       {sections.variants.slice(0, 3).map((v, i) => {
         const head = `${i + 1}. ${v.label}`;
@@ -413,26 +425,26 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
         const headTrunc = truncate(head, headBudget);
         const bodyTrunc = truncate(v.body, cap - headTrunc.length - 3);
         return (
-          <Box key={i}>
+          <Text key={i}>
             <Text color="gray" dimColor>{pad(i === 0 ? "variants" : "")}</Text>
             <Text color="cyan" bold>{headTrunc}</Text>
             <Text color="gray"> — </Text>
-            <Text>{bodyTrunc}</Text>
-          </Box>
+            {bodyTrunc}
+          </Text>
         );
       })}
       {sections.topRisks.slice(0, 2).map((r, i) => (
-        <Box key={i}>
+        <Text key={i}>
           <Text color="gray" dimColor>{pad(i === 0 ? "risks" : "")}</Text>
           <Text color="yellow">▲ </Text>
-          <Text>{truncate(r, cap - 2)}</Text>
-        </Box>
+          {truncate(r, cap - 2)}
+        </Text>
       ))}
       {sections.ifAcceptedBuild ? (
-        <Box>
+        <Text>
           <Text color="gray" dimColor>{pad("build")}</Text>
           <Text color="green">{truncate(sections.ifAcceptedBuild, cap)}</Text>
-        </Box>
+        </Text>
       ) : null}
     </Box>
   );
@@ -564,6 +576,8 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const [expandedAwait, setExpandedAwait] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
   const [projectFilter, setProjectFilter] = React.useState<string | null>(null);
+  const [capturing, setCapturing] = React.useState<boolean>(false);
+  const [captureBuffer, setCaptureBuffer] = React.useState<string>("");
 
   const fleetRef = React.useRef<WatcherFleet | null>(null);
   if (!fleetRef.current) fleetRef.current = new WatcherFleet();
@@ -675,9 +689,53 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
 
   // Keyboard
   useInput((input, key) => {
+    // Capture-input mode swallows almost everything — only Esc cancels and
+    // Enter submits. Other keys append to the buffer.
+    if (capturing) {
+      if (key.escape) {
+        setCapturing(false);
+        setCaptureBuffer("");
+        setMessage(null);
+        return;
+      }
+      if (key.return) {
+        const text = captureBuffer.trim();
+        setCapturing(false);
+        setCaptureBuffer("");
+        if (!text) {
+          setMessage("capture cancelled — empty input.");
+          return;
+        }
+        try {
+          const created = callbacks.onCapture(text);
+          if (created) {
+            setMessage(`↓ captured ${truncate(text, 50)} → ${created.slug}`);
+          }
+        } catch (err) {
+          setMessage(`capture failed: ${(err as Error).message}`);
+        }
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setCaptureBuffer((b) => b.slice(0, -1));
+        return;
+      }
+      // Filter control chars; accept anything else as text input.
+      if (input && !key.ctrl && !key.meta) {
+        setCaptureBuffer((b) => b + input);
+      }
+      return;
+    }
+
     if (input === "q" || (key.ctrl && input === "c")) {
       onAction({ kind: "quit" });
       exit();
+      return;
+    }
+    if (input === "c") {
+      setCapturing(true);
+      setCaptureBuffer("");
+      setMessage(null);
       return;
     }
     if (key.upArrow || input === "k") {
@@ -904,8 +962,21 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
         })
       )}
 
-      <Box marginTop={1}>
-        <FooterBar hints={hints} message={message} narrow={narrow} cols={cols} />
+      <Box marginTop={1} flexDirection="column">
+        {capturing ? (
+          <Box paddingX={1}>
+            <Text color="cyan" bold>capture › </Text>
+            <Text>{captureBuffer}</Text>
+            <Text color="gray">
+              {truncate(
+                "_  (enter to save · esc to cancel)",
+                Math.max(20, cols - 12 - captureBuffer.length)
+              )}
+            </Text>
+          </Box>
+        ) : (
+          <FooterBar hints={hints} message={message} narrow={narrow} cols={cols} />
+        )}
       </Box>
     </Box>
   );
@@ -944,6 +1015,7 @@ function buildHints(
   }
 
   // Universal navigation hints
+  base.push({ key: "c", label: "capture" });
   base.push({ key: "tab", label: "next zone" });
   if (hasProjects) base.push({ key: "p", label: "project" });
   base.push({ key: "q", label: "quit" });

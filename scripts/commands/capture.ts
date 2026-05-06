@@ -7,17 +7,12 @@
  * (default: text if positional args are given, otherwise reminders).
  */
 
-import * as fs from "fs";
-import * as path from "path";
-import * as crypto from "crypto";
 import { z } from "zod";
 import { Output } from "../lib/output";
 import { registerVerb } from "../lib/contracts";
-import { slugify } from "../lib/text";
 import { resolveProject } from "../lib/projects";
+import { createRawIdea } from "../lib/ideas";
 import { getSource, listSources, RawCapture } from "../lib/sources";
-
-const IDEAS_DIR = path.join(__dirname, "..", "..", "ideas");
 
 export interface CaptureArgs {
   text?: string[];
@@ -45,44 +40,10 @@ registerVerb({
   data: CaptureData,
 });
 
-function newId(): string {
-  return crypto.randomBytes(4).toString("hex");
-}
-
 function writeIdea(c: RawCapture, defaultSource: string): z.infer<typeof CapturedIdea> {
-  const id = newId();
-  const slug = `${slugify(c.title)}-${id.slice(0, 4)}`;
-  const filepath = path.join(IDEAS_DIR, `${slug}.md`);
   const project = c.project ?? resolveProject(c.title, c.notes ?? "") ?? "letsbarker";
-  const sourceLabel = c.external_id ? defaultSource : defaultSource === "reminders" ? "reminders" : "capture";
-
-  const content = `---
-id: ${id}
-title: "${c.title.replace(/"/g, '\\"')}"
-status: raw
-source: ${sourceLabel}
-project: ${project}
-captured_at: ${new Date().toISOString()}
-brainstormed_at: ~
-decided_at: ~
-github_issue: ~
-github_pr: ~
-loop_count: 0
----
-
-## Raw Idea
-
-${c.title}
-${c.notes ? "\n## Notes\n\n" + c.notes + "\n" : ""}
-## Brainstorm
-
-<!-- Filled by the brainstormer. -->
-`;
-
-  if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
-  fs.writeFileSync(filepath, content, "utf8");
-
-  return { slug, filename: `${slug}.md`, id, title: c.title, project };
+  const source = c.external_id ? defaultSource : defaultSource === "reminders" ? "reminders" : "capture";
+  return createRawIdea({ title: c.title, notes: c.notes, project, source });
 }
 
 export async function run(args: CaptureArgs, out: Output): Promise<void> {

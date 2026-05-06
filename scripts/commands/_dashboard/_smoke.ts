@@ -72,6 +72,7 @@ async function main() {
         onAccept: () => {},
         onReject: () => {},
         onNeedsMoreThought: () => {},
+        onCapture: () => null,
       },
       onAction: () => {},
     }),

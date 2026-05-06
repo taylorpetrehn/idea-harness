@@ -8,7 +8,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { fuzzyTitleMatch } from "./text";
+import * as crypto from "crypto";
+import { fuzzyTitleMatch, slugify } from "./text";
 import { atomicWriteFileSync } from "./atomic";
 import { appendJournal } from "./journal";
 import { log } from "./log";
@@ -69,6 +70,75 @@ export function readIdeaFile(slug: string): string {
   const filepath = resolveFilepath(slug);
   if (!filepath) throw new Error(`Idea not found: ${slug}`);
   return fs.readFileSync(filepath, "utf8");
+}
+
+// ── creation ──────────────────────────────────────────────────────────
+
+export interface CreateRawIdeaInput {
+  title: string;
+  notes?: string;
+  project?: string;
+  source?: string;
+}
+
+export interface CreatedIdea {
+  slug: string;
+  filename: string;
+  id: string;
+  title: string;
+  project: string;
+}
+
+/**
+ * Write a fresh `raw` idea to ideas/<slug>.md. Single home for the
+ * frontmatter shape so callers (capture verb, dashboard inline capture,
+ * external integrations) all produce identical files.
+ *
+ * Caller resolves the project before calling — this lib doesn't reach
+ * into projects.yml on its own to avoid pulling that dep into every
+ * caller. The capture verb does it via `resolveProject`; the dashboard
+ * passes `project` through directly.
+ */
+export function createRawIdea(input: CreateRawIdeaInput): CreatedIdea {
+  if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
+
+  const id = crypto.randomBytes(4).toString("hex");
+  const slug = `${slugify(input.title)}-${id.slice(0, 4)}`;
+  const filepath = path.join(IDEAS_DIR, `${slug}.md`);
+  const project = input.project ?? "letsbarker";
+  const source = input.source ?? "capture";
+  const title = input.title.replace(/"/g, '\\"');
+
+  const content = `---
+id: ${id}
+title: "${title}"
+status: raw
+source: ${source}
+project: ${project}
+captured_at: ${new Date().toISOString()}
+brainstormed_at: ~
+decided_at: ~
+github_issue: ~
+github_pr: ~
+loop_count: 0
+---
+
+## Raw Idea
+
+${input.title}
+${input.notes ? "\n## Notes\n\n" + input.notes + "\n" : ""}
+## Brainstorm
+
+<!-- Filled by the brainstormer. -->
+`;
+
+  atomicWriteFileSync(filepath, content);
+  appendJournal({
+    type: "idea.captured",
+    slug,
+    data: { project, source, title: input.title },
+  });
+  return { slug, filename: `${slug}.md`, id, title: input.title, project };
 }
 
 export function setStatusInFile(filepath: string, status: IdeaStatus): void {

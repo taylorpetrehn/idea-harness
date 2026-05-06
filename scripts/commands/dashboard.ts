@@ -20,10 +20,12 @@ import { spawn } from "child_process";
 
 import {
   IdeaSummary,
+  createRawIdea,
   listIdeas,
   setStatus,
 } from "../lib/ideas";
 import { readJournal } from "../lib/journal";
+import { resolveProject } from "../lib/projects";
 import { Output } from "../lib/output";
 import { z } from "zod";
 import { registerVerb } from "../lib/contracts";
@@ -88,6 +90,11 @@ export async function run(_args: DashboardArgs, out: Output): Promise<void> {
         onReject: (slug) => setStatus(slug, "rejected", "Rejected from dashboard."),
         onNeedsMoreThought: (slug) =>
           setStatus(slug, "needs-more-thought", "Flagged needs-more-thought from dashboard."),
+        onCapture: (text) => {
+          const project = resolveProject(text, "") ?? "letsbarker";
+          const created = createRawIdea({ title: text, project, source: "dashboard" });
+          return { slug: created.slug, project: created.project };
+        },
       },
     });
 

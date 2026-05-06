@@ -100,7 +100,7 @@ async function main() {
       initial: snapshot(),
       refresh: snapshot,
       ideasDir: IDEAS_DIR,
-      callbacks: { onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {} },
+      callbacks: { onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {}, onCapture: () => null },
       onAction: (a: unknown) => { captured = a; exitCalled = true; },
     }),
     { stdout, stdin, exitOnCtrlC: false, patchConsole: false }
@@ -137,7 +137,7 @@ async function main() {
       initial: snapshot(),
       refresh: snapshot,
       ideasDir: IDEAS_DIR,
-      callbacks: { onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {} },
+      callbacks: { onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {}, onCapture: () => null },
       onAction: () => {},
     }),
     { stdout, stdin, exitOnCtrlC: false, patchConsole: false }
