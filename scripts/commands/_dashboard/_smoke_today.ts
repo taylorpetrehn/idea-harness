@@ -113,6 +113,25 @@ async function main() {
     check("beta row present", false);
   }
 
+  // ── orphan filter ────────────────────────────────────────────────
+  // Inject a journal entry for a slug with NO matching idea (i.e. the
+  // idea file was deleted but the journal entry persists). By default
+  // it should not appear in the lifecycle output.
+  const orphanJournal = [
+    ...journal,
+    { ts: t4, type: "idea.status", slug: "ghost-of-deleted-idea",
+      data: { from: "raw", to: "brainstormed" } },
+  ];
+  const filtered = dataMod.buildTodayLifecycle(ideas, orphanJournal,
+    { windowMs: 4 * 60 * 60 * 1000 });
+  check("orphan slug filtered out by default",
+    !filtered.some((e) => e.slug === "ghost-of-deleted-idea"));
+
+  const withOrphans = dataMod.buildTodayLifecycle(ideas, orphanJournal,
+    { windowMs: 4 * 60 * 60 * 1000, includeOrphans: true });
+  check("orphan slug shown with includeOrphans: true",
+    withOrphans.some((e) => e.slug === "ghost-of-deleted-idea"));
+
   process.exit(pass ? 0 : 1);
 }
 

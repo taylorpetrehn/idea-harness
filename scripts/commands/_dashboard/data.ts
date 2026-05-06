@@ -385,11 +385,17 @@ export interface LifecycleEntry {
  * progression is captured as the `trail` array; the renderer turns
  * those kinds into a compact glyph string. Sorted newest first by
  * latest activity.
+ *
+ * Orphan filter: by default, entries whose slug has no current idea
+ * file are dropped. The journal is append-only and never garbage-
+ * collected, so an idea deleted yesterday would otherwise haunt
+ * TODAY forever. Pass `includeOrphans: true` for debugging / audit
+ * surfaces.
  */
 export function buildTodayLifecycle(
   ideas: IdeaSummary[],
   journal: JournalEntry[],
-  opts: { windowMs?: number; limit?: number } = {}
+  opts: { windowMs?: number; limit?: number; includeOrphans?: boolean } = {}
 ): LifecycleEntry[] {
   // Reuse the existing feed builder to dedupe and apply the time window.
   const flat = buildTodayFeed(ideas, journal, { windowMs: opts.windowMs });
@@ -431,7 +437,18 @@ export function buildTodayLifecycle(
     entry.trail.sort((a, b) => stageRank(a) - stageRank(b));
   }
 
-  const out = Array.from(bySlug.values()).sort((a, b) =>
+  // Drop orphan entries by default — slug has no matching idea file.
+  // We detect orphans by absence from titleBySlug rather than by
+  // entry.title === undefined because an idea could legitimately have
+  // an empty title (corrupted frontmatter). titleBySlug is the
+  // authoritative "this slug exists" set.
+  const slugsWithFiles = new Set(ideas.map((i) => i.slug));
+  let entries = Array.from(bySlug.values());
+  if (!opts.includeOrphans) {
+    entries = entries.filter((e) => slugsWithFiles.has(e.slug));
+  }
+
+  const out = entries.sort((a, b) =>
     b.latestTs.localeCompare(a.latestTs)
   );
 

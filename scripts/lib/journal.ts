@@ -58,3 +58,27 @@ export function readJournal(opts: { since?: Date; limit?: number } = {}): Journa
 }
 
 export const JOURNAL_FILE = JOURNAL_PATH;
+
+/**
+ * Strip every entry for a given slug from the journal. Test-only —
+ * production code should never modify the journal in place. Smokes
+ * call this on teardown so the rolling TODAY feed doesn't accumulate
+ * ghost entries from disposable test ideas. No-op if the journal
+ * doesn't exist.
+ */
+export function purgeJournalForSlug(slug: string): void {
+  if (!fs.existsSync(JOURNAL_PATH)) return;
+  const raw = fs.readFileSync(JOURNAL_PATH, "utf8");
+  const kept: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as JournalEntry;
+      if (e.slug === slug) continue;
+    } catch {
+      // keep malformed lines — better than silently dropping
+    }
+    kept.push(line);
+  }
+  fs.writeFileSync(JOURNAL_PATH, kept.length ? kept.join("\n") + "\n" : "", "utf8");
+}

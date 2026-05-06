@@ -22,7 +22,7 @@ async function main() {
   const { createRequire } = await import("module");
   const req = createRequire(import.meta.url);
   const { listIdeas, createRawIdea } = req("../../lib/ideas") as typeof import("../../lib/ideas");
-  const { readJournal } = req("../../lib/journal") as typeof import("../../lib/journal");
+  const { readJournal, purgeJournalForSlug } = req("../../lib/journal") as typeof import("../../lib/journal");
 
   const ink = await import("ink");
   const dashboardMod = await import("./index");
@@ -39,6 +39,7 @@ async function main() {
     for (const slug of createdSlugs) {
       const p = path.join(IDEAS_DIR, `${slug}.md`);
       try { fs.unlinkSync(p); } catch { /* ignore */ }
+      try { purgeJournalForSlug(slug); } catch { /* ignore */ }
     }
   };
   process.on("uncaughtException", (e) => { cleanup(); throw e; });

@@ -29,6 +29,7 @@ async function main() {
   const { createRequire } = await import("module");
   const req = createRequire(import.meta.url);
   const { createRawIdea, setStatus } = req("../../lib/ideas") as typeof import("../../lib/ideas");
+  const { purgeJournalForSlug } = req("../../lib/journal") as typeof import("../../lib/journal");
   const dataMod = await import("./data");
 
   const ROOT = process.cwd();
@@ -69,6 +70,7 @@ async function main() {
 
   const cleanup = () => {
     try { fs.unlinkSync(ideaPath); } catch { /* ignore */ }
+    try { purgeJournalForSlug(created.slug); } catch { /* ignore */ }
     // Sweep any new run dirs created during this smoke.
     for (const id of safeReaddir(RUNS_DIR)) {
       if (runsBefore.has(id)) continue;
