@@ -579,15 +579,19 @@ export function buildTrailGlyphs(entry: LifecycleEntry): string[] {
 
 function todayGlyph(kind: TodayEntry["kind"]): { glyph: string; color: string } {
   switch (kind) {
-    case "captured":      return { glyph: "↓", color: "cyan" };
-    case "brainstormed":  return { glyph: "💭", color: "cyan" };
-    case "accepted":      return { glyph: "✓", color: "green" };
-    case "rejected":      return { glyph: "✗", color: "red" };
-    case "needs-thought": return { glyph: "▲", color: "yellow" };
-    case "build-start":   return { glyph: "◆", color: "cyan" };
-    case "pr-open":       return { glyph: "★", color: "green" };
-    case "shipped":       return { glyph: "✓", color: "green" };
-    default:              return { glyph: "·", color: "gray" };
+    case "captured":         return { glyph: "↓", color: "cyan" };
+    case "brainstormed":     return { glyph: "💭", color: "cyan" };
+    case "accepted":         return { glyph: "✓", color: "green" };
+    case "rejected":         return { glyph: "✗", color: "red" };
+    case "needs-thought":    return { glyph: "▲", color: "yellow" };
+    case "build-start":      return { glyph: "◆", color: "cyan" };
+    case "pr-open":          return { glyph: "★", color: "green" };
+    case "ci-running":       return { glyph: "⚙", color: "yellow" };
+    case "ci-failed":        return { glyph: "⚙", color: "red" };
+    case "review-changes":   return { glyph: "✎", color: "yellow" };
+    case "merged":           return { glyph: "✅", color: "green" };
+    case "shipped":          return { glyph: "✓", color: "green" };
+    default:                 return { glyph: "·", color: "gray" };
   }
 }
 

@@ -101,6 +101,10 @@ export const IdeaStatusSchema = z.enum([
   "needs-more-thought",
   "building",
   "pr-open",
+  "ci-running",
+  "ci-failed",
+  "review-changes-requested",
+  "merged",
   "shipped",
 ]);
 export type IdeaStatusSchemaT = z.infer<typeof IdeaStatusSchema>;

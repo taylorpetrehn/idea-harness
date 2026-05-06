@@ -350,7 +350,20 @@ export function ideaFilepath(ideasDir: string, filename: string): string {
 
 export interface TodayEntry {
   ts: string;
-  kind: "captured" | "brainstormed" | "accepted" | "rejected" | "build-start" | "pr-open" | "shipped" | "needs-thought" | "other";
+  kind:
+    | "captured"
+    | "brainstormed"
+    | "accepted"
+    | "rejected"
+    | "build-start"
+    | "pr-open"
+    | "ci-running"
+    | "ci-failed"
+    | "review-changes"
+    | "merged"
+    | "shipped"
+    | "needs-thought"
+    | "other";
   slug: string;
   title?: string;
   detail?: string;
@@ -530,6 +543,10 @@ const STAGE_RANK: Record<TodayEntry["kind"], number> = {
   accepted: 3,
   "build-start": 4,
   "pr-open": 5,
+  "ci-running": 5.1,
+  "ci-failed": 5.2,
+  "review-changes": 5.3,
+  merged: 6,
   shipped: 6,
   other: 7,
 };
@@ -553,6 +570,10 @@ function mapJournalEntry(
     else if (to === "needs-more-thought") kind = "needs-thought";
     else if (to === "building") kind = "build-start";
     else if (to === "pr-open") kind = "pr-open";
+    else if (to === "ci-running") kind = "ci-running";
+    else if (to === "ci-failed") kind = "ci-failed";
+    else if (to === "review-changes-requested") kind = "review-changes";
+    else if (to === "merged") kind = "merged";
     else if (to === "shipped") kind = "shipped";
     else return null;
     return { ts: e.ts, kind, slug, title, detail: from && to ? `${from} → ${to}` : undefined };

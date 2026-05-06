@@ -33,6 +33,10 @@ const VALID_STATUSES: IdeaStatus[] = [
   "needs-more-thought",
   "building",
   "pr-open",
+  "ci-running",
+  "ci-failed",
+  "review-changes-requested",
+  "merged",
   "shipped",
 ];
 

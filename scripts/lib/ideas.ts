@@ -28,6 +28,13 @@ export type IdeaStatus =
   | "needs-more-thought"
   | "building"
   | "pr-open"
+  // Phase 3 (PR follow-through): the engine watches the PR after it
+  // opens and reacts to CI / review state. `pr-open` is the entry
+  // point; the watcher then drives the idea through these.
+  | "ci-running"
+  | "ci-failed"
+  | "review-changes-requested"
+  | "merged"
   | "shipped";
 
 export interface IdeaSummary {
@@ -151,6 +158,9 @@ export function setStatusInFile(filepath: string, status: IdeaStatus): void {
   if (status === "accepted" || status === "rejected" || status === "needs-more-thought") {
     content = content.replace(/^decided_at: .+$/m, `decided_at: ${new Date().toISOString()}`);
   }
+  // Phase 3 PR-followthrough states never re-stamp decided_at — that
+  // moment was when the human (or auto-flow) accepted the idea, not
+  // every CI flap afterwards.
   atomicWriteFileSync(filepath, content);
   appendJournal({
     type: "idea.status",

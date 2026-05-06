@@ -300,6 +300,7 @@ called "App Ideas", then `harness brainstorm`.
 | `IDEA_HARNESS_PER_RUN_CAP` | hard run-level token cap | 100000 |
 | `IDEA_HARNESS_AUTO_FLOW` | when `true`, the brainstormer auto-promotes high-confidence accept/reject verdicts past the human gate (see "Auto-flow" below) | `false` |
 | `IDEA_HARNESS_AUTO_SHARPEN` | when `true`, `needs-more-thought` brainstorms trigger the sharpener (see "Scope sharpener" below) | `false` |
+| `IDEA_HARNESS_AUTO_FOLLOW` | when `true`, `harness follow` / `watch-prs` actually spawn Claude and run `gh pr merge`; without it both verbs run as dry probes (see "PR follow-through" below) | `false` |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info`, `debug` | `info` |
 
 ## Auto-flow
@@ -363,6 +364,46 @@ The dashboard surfaces the sharpener via:
 
 The sharpener is opt-in. Default off. Failure (LLM error, write-back
 failure) is logged and never breaks the brainstorm commit.
+
+## PR follow-through
+
+Phase 3. Once a build opens a PR, `harness follow [<slug>]` (one-shot)
+or `harness watch-prs` (daemon, default 5-minute interval) polls the
+PR with `gh` and reacts:
+
+- CI failed → idea status flips to `ci-failed`, then Claude Code is
+  spawned in the worktree with the failing log + "fix this. test
+  locally. push."
+- Reviewer requested changes → status flips to
+  `review-changes-requested`, Claude Code spawned with the comment
+  thread + diff + "address this comment."
+- CI green + approved + mergeable → `gh pr merge --merge` →
+  status: `merged`.
+- CI pending → status: `ci-running`. No spawn, no merge.
+
+Both verbs are gated by `IDEA_HARNESS_AUTO_FOLLOW=true`. Without it
+they run in **dry mode**: poll-and-report only, no spawn or merge.
+Default off keeps the same posture as the auto-flow / sharpener
+flags — opt in when you want hands-off operation.
+
+The dashboard surfaces the new states with their own glyphs:
+
+- `⚙` (yellow) ci-running, `⚙` (red) ci-failed
+- `✎` review-changes-requested
+- `✅` merged
+
+A typical full-loop trail might read `↓💭⚡✓◆★⚙✅` —
+captured, brainstormed, auto-flow-accepted, build started, PR open,
+CI ran, merged.
+
+A small `lib/github.ts` wrapper (around `gh pr view / pr checks /
+pr merge / run view`) is the single pinch point for GitHub access.
+Tests stub it via `setGhRunner` and stub the Claude spawn via the
+`spawnClaude` opt — `_smoke_pr_followthrough.ts` covers all five
+state-machine paths without touching the network.
+
+Webhook receivers were called out as a follow-on in the original
+roadmap; this poll-based daemon is the first cut.
 
 ## Why This Shape
 

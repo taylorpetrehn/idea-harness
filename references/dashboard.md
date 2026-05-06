@@ -94,6 +94,12 @@ same instant render as `↓💭` not `💭↓`.
        prefix on AWAITING YOU. The detail pane shows the question
        text and the exact `harness reply <slug>` invocation. See
        README "Scope sharpener" for the full semantics. |
+| `⚙` | CI is running (yellow) or has failed (red) on the PR.
+       Driven by `idea.status` flips from the PR watcher when
+       `IDEA_HARNESS_AUTO_FOLLOW=true`. |
+| `✎` | reviewer requested changes on the PR. The watcher will
+       spawn Claude to address them on the next pass. |
+| `✅` | PR merged. Terminal stage in the typical lifecycle. |
 
 `scanActiveRuns` flags runs as `stalled: true` when their latest
 event is > 5 minutes old. The renderer paints these with `⏸`
