@@ -118,6 +118,7 @@ export async function run(_args: DashboardArgs, out: Output): Promise<void> {
         idea: ideaForWatch,
         eventsPath: action.run.eventsPath,
         exitOnTerminal: false,
+        exitHint: "q to return to dashboard · ctrl+c to exit",
       });
       // Loop back into the dashboard.
       continue;
@@ -168,7 +169,12 @@ async function runBuildWithWatch(idea: IdeaSummary, out: Output): Promise<void> 
   }
 
   const { renderWatchTui } = await import("./_watch_tui");
-  await renderWatchTui({ idea, eventsPath, exitOnTerminal: true });
+  await renderWatchTui({
+    idea,
+    eventsPath,
+    exitOnTerminal: true,
+    exitHint: "q to return to dashboard · auto-exits when build finishes",
+  });
 
   // Watch TUI exited; wait briefly for the child to finish its envelope flush.
   await childExit;

@@ -69,6 +69,16 @@ type Selectable =
   | { zone: "await"; slug: string }
   | { zone: "today"; slug: string };
 
+/** Two Selectables refer to the same entity if zone + id match. Used to
+ *  preserve cursor position across item list mutations. */
+function sameSelectable(a: Selectable | null | undefined, b: Selectable | null | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.zone !== b.zone) return false;
+  if (a.zone === "flight" && b.zone === "flight") return a.runId === b.runId;
+  if (a.zone !== "flight" && b.zone !== "flight") return a.slug === b.slug;
+  return false;
+}
+
 export interface DashboardState {
   ideas: IdeaSummary[];
   runs: ActiveRun[];
@@ -271,21 +281,29 @@ function FlightRow({
   const project = idea?.project ?? "—";
 
   const verbLabel = run.verb;
-  const verbColor = verbLabel === "build" ? "cyan" : verbLabel === "brainstorm" ? "yellow" : "white";
+  const verbColor = run.stalled
+    ? "red"
+    : verbLabel === "build" ? "cyan"
+    : verbLabel === "brainstorm" ? "yellow"
+    : "white";
 
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Box>
         <Text color={selected ? "cyan" : "gray"}>{selected ? "▸ " : "  "}</Text>
-        <Text color="cyan"><Spinner type="dots" /></Text>
-        <Text color={verbColor} bold> {verbLabel}</Text>
+        {run.stalled ? (
+          <Text color="red" bold>⏸</Text>
+        ) : (
+          <Text color="cyan"><Spinner type="dots" /></Text>
+        )}
+        <Text color={verbColor} bold> {verbLabel}{run.stalled ? " (stalled)" : ""}</Text>
         <Text color="gray"> · </Text>
-        <Text bold={selected}>{truncate(title, narrow ? 40 : 60)}</Text>
+        <Text bold={selected} dimColor={run.stalled}>{truncate(title, narrow ? 40 : 60)}</Text>
       </Box>
       <Box paddingLeft={4} flexDirection={narrow ? "column" : "row"}>
         <Text color="gray">{project}</Text>
         <Text color="gray">{narrow ? "" : "  ·  "}</Text>
-        <Text color="gray">{elapsed}</Text>
+        <Text color={run.stalled ? "red" : "gray"}>{elapsed}{run.stalled ? " idle" : ""}</Text>
         <Text color="gray">{narrow ? "" : "  ·  "}</Text>
         <Text color="gray">{eventCount} ev</Text>
       </Box>
@@ -660,6 +678,12 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const [paletteOpen, setPaletteOpen] = React.useState<boolean>(false);
   const [paletteCursor, setPaletteCursor] = React.useState<number>(0);
   const [helpOpen, setHelpOpen] = React.useState<boolean>(false);
+  // Logical pointer to the currently-selected entity (slug for await/today,
+  // runId for flight). Survives item list reshuffles after mutations so
+  // pressing `a` on an awaiting idea doesn't yank the cursor off to a
+  // neighbor. Updated whenever the user navigates; consulted on each
+  // refresh tick to relocate the cursor to the same logical item.
+  const selectedRef = React.useRef<Selectable | null>(null);
 
   const fleetRef = React.useRef<WatcherFleet | null>(null);
   if (!fleetRef.current) fleetRef.current = new WatcherFleet();
@@ -750,14 +774,36 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     return items.findIndex((s) => s.zone === zone);
   };
 
-  // Clamp cursor when the item list shrinks.
+  // Cursor stickiness: when the items list reshuffles (e.g. user pressed
+  // `a` on an awaiting idea, which removes it from AWAITING YOU), follow
+  // the prior selection by logical id. If the entity moved between zones
+  // (e.g. an accepted idea is now buildable elsewhere), still snap to it.
+  // If it's gone entirely, hold position so the next neighbor is selected.
   React.useEffect(() => {
     if (items.length === 0) {
       setCursor(0);
+      selectedRef.current = null;
       return;
     }
-    if (cursor >= items.length) setCursor(items.length - 1);
-  }, [items.length, cursor]);
+    // Bootstrap the ref on first paint so subsequent reshuffles can find
+    // it. Without this the user has to press an arrow once to "arm" the
+    // sticky behavior.
+    if (!selectedRef.current && cursor < items.length) {
+      selectedRef.current = items[cursor];
+    }
+    const ref = selectedRef.current;
+    if (ref) {
+      const idx = items.findIndex((s) => sameSelectable(s, ref));
+      if (idx >= 0) {
+        if (idx !== cursor) setCursor(idx);
+        return;
+      }
+    }
+    // Pointer's gone — clamp + adopt whatever's at the new index.
+    const clamped = Math.min(cursor, items.length - 1);
+    if (clamped !== cursor) setCursor(clamped);
+    selectedRef.current = items[clamped] ?? null;
+  }, [items, cursor]);
 
   const next = React.useMemo(() => computeNext(state.ideas), [state.ideas]);
   const selected = items[cursor];
@@ -881,17 +927,34 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
       return;
     }
     if (key.upArrow || input === "k") {
-      setCursor((c) => Math.max(0, c - 1));
+      setCursor((c) => {
+        const next = Math.max(0, c - 1);
+        selectedRef.current = items[next] ?? null;
+        return next;
+      });
       setMessage(null);
       return;
     }
     if (key.downArrow || input === "j") {
-      setCursor((c) => Math.min(items.length - 1, c + 1));
+      setCursor((c) => {
+        const next = Math.min(items.length - 1, c + 1);
+        selectedRef.current = items[next] ?? null;
+        return next;
+      });
       setMessage(null);
       return;
     }
-    if (input === "g") { setCursor(0); return; }
-    if (input === "G") { setCursor(Math.max(0, items.length - 1)); return; }
+    if (input === "g") {
+      setCursor(0);
+      selectedRef.current = items[0] ?? null;
+      return;
+    }
+    if (input === "G") {
+      const last = Math.max(0, items.length - 1);
+      setCursor(last);
+      selectedRef.current = items[last] ?? null;
+      return;
+    }
 
     // Tab cycles between zones; pressing it lands on the first row of the
     // next non-empty zone after the current selection.
@@ -904,6 +967,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
         const idx = zoneStart(target);
         if (idx >= 0) {
           setCursor(idx);
+          selectedRef.current = items[idx] ?? null;
           setMessage(null);
           return;
         }
@@ -923,6 +987,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
         return nextIdx >= projects.length ? null : projects[nextIdx];
       });
       setCursor(0);
+      selectedRef.current = null; // forget last pointer; project filter resets context
       setMessage(null);
       return;
     }

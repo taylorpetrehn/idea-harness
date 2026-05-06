@@ -1,5 +1,5 @@
 /**
- * scripts/commands/_watch_tui.tsx
+ * scripts/commands/_watch_tui/index.tsx
  *
  * Ink renderer for `harness build watch`. Reads runs/<id>/events.ndjson
  * (already-streamed lines + a tail) and presents a live, full-screen
@@ -17,6 +17,9 @@ import Spinner from "ink-spinner";
 import * as fs from "fs";
 
 import type { IdeaSummary } from "../../lib/ideas";
+import { withAltScreen } from "./altscreen";
+
+export { withAltScreen };
 
 interface ParsedEvent {
   ts: string;
@@ -29,6 +32,10 @@ interface WatchTuiProps {
   eventsPath: string;
   /** When true, exit on terminal events (build.done / build.failed). */
   exitOnTerminal?: boolean;
+  /** Override the "q to quit" footer hint. When the dashboard zooms
+   *  into the watch TUI, q returns to the dashboard rather than
+   *  ending the session — the caller can pass a clearer label here. */
+  exitHint?: string;
   /** When set, drives synthetic events instead of tailing a file. */
   demoFeed?: AsyncIterable<ParsedEvent>;
 }
@@ -108,7 +115,18 @@ function truncate(s: string, n: number): string {
 
 // ── components ──────────────────────────────────────────────────────
 
-function Header({ idea, runId }: { idea: IdeaSummary; runId: string }) {
+function Header({ idea, runId, compact }: { idea: IdeaSummary; runId: string; compact: boolean }) {
+  if (compact) {
+    return (
+      <Box paddingX={1}>
+        <Text bold color="cyan">harness </Text>
+        <Text>build </Text>
+        <Text bold color={statusColor(idea.status)}>{idea.status}</Text>
+        <Text color="gray"> · </Text>
+        <Text>{truncate(idea.title, 50)}</Text>
+      </Box>
+    );
+  }
   return (
     <Box
       borderStyle="round"
@@ -167,11 +185,15 @@ function Footer({
   startedAt,
   done,
   prUrl,
+  compact,
+  exitHint,
 }: {
   events: ParsedEvent[];
   startedAt: number;
   done: { ok: boolean; reason: string } | null;
   prUrl: string | null;
+  compact: boolean;
+  exitHint?: string;
 }) {
   const [now, setNow] = React.useState(Date.now());
   React.useEffect(() => {
@@ -181,6 +203,27 @@ function Footer({
 
   const elapsed = fmtElapsed(now - startedAt);
   const last = events[events.length - 1];
+
+  if (compact) {
+    return (
+      <Box paddingX={1}>
+        {done ? (
+          <Text color={done.ok ? "green" : "red"} bold>{done.ok ? "✓" : "✗"} </Text>
+        ) : (
+          <Text color="cyan"><Spinner type="dots" /> </Text>
+        )}
+        <Text color="gray">{elapsed} · </Text>
+        <Text>{events.length} ev</Text>
+        {prUrl ? (
+          <>
+            <Text color="gray"> · </Text>
+            <Text color="green">PR </Text>
+            <Text>{truncate(prUrl, 40)}</Text>
+          </>
+        ) : null}
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -218,7 +261,7 @@ function Footer({
         </Box>
       ) : null}
       <Box>
-        <Text color="gray" dimColor>q to quit · ctrl+c to exit</Text>
+        <Text color="gray" dimColor>{exitHint ?? "q to quit · ctrl+c to exit"}</Text>
       </Box>
     </Box>
   );
@@ -226,7 +269,7 @@ function Footer({
 
 // ── main TUI ────────────────────────────────────────────────────────
 
-export function WatchTui({ idea, eventsPath, exitOnTerminal, demoFeed }: WatchTuiProps) {
+export function WatchTui({ idea, eventsPath, exitOnTerminal, exitHint, demoFeed }: WatchTuiProps) {
   const { exit } = useApp();
   const [events, setEvents] = React.useState<ParsedEvent[]>([]);
   const [done, setDone] = React.useState<{ ok: boolean; reason: string } | null>(null);
@@ -261,8 +304,8 @@ export function WatchTui({ idea, eventsPath, exitOnTerminal, demoFeed }: WatchTu
         if (ev.type === "build.pr_url" && typeof ev.data.url === "string") {
           setPrUrl(ev.data.url);
         }
-        if (ev.type === "build.done" || ev.type === "done") {
-          setDone({ ok: true, reason: String(ev.data.outcome ?? "complete") });
+        if (ev.type === "build.done" || ev.type === "done" || ev.type === "build.dry") {
+          setDone({ ok: true, reason: String(ev.data.outcome ?? ev.type.replace("build.", "")) });
           if (exitOnTerminal) setTimeout(() => exit(), 800);
         }
         if (ev.type === "build.failed") {
@@ -296,9 +339,25 @@ export function WatchTui({ idea, eventsPath, exitOnTerminal, demoFeed }: WatchTu
     }
 
     let position = 0;
+    let leftover = "";
+
+    // Splits a chunk into complete lines + any trailing partial line, so a
+    // poll boundary that lands mid-write doesn't feed JSON.parse a half-line.
+    const drainChunk = (chunk: string) => {
+      const combined = leftover + chunk;
+      const nl = combined.lastIndexOf("\n");
+      if (nl < 0) {
+        leftover = combined;
+        return;
+      }
+      const complete = combined.slice(0, nl);
+      leftover = combined.slice(nl + 1);
+      for (const line of complete.split("\n")) ingest(line);
+    };
+
     if (fs.existsSync(eventsPath)) {
       const initial = fs.readFileSync(eventsPath, "utf8");
-      for (const line of initial.split("\n")) ingest(line);
+      drainChunk(initial);
       position = initial.length;
     }
 
@@ -311,10 +370,11 @@ export function WatchTui({ idea, eventsPath, exitOnTerminal, demoFeed }: WatchTu
           const buf = Buffer.alloc(size - position);
           fs.readSync(fd, buf, 0, size - position, position);
           fs.closeSync(fd);
-          for (const line of buf.toString("utf8").split("\n")) ingest(line);
+          drainChunk(buf.toString("utf8"));
           position = size;
         } else if (size < position) {
           position = 0;
+          leftover = "";
         }
       } catch {
         // file vanished — keep polling
@@ -329,15 +389,19 @@ export function WatchTui({ idea, eventsPath, exitOnTerminal, demoFeed }: WatchTu
 
   // Tail the event list to fit in remaining terminal height.
   const rows = process.stdout.rows ?? 30;
-  // Header ~6 rows, footer ~5 rows, padding ~2 → keep this many event rows.
-  const cap = Math.max(6, rows - 13);
+  // < 16 rows: collapse to single-line header + footer, no borders, no
+  // top/bottom margins — anything bordered ghosts in the VS Code pane.
+  const compact = rows < 16;
+  // Compact: header 1 + footer 1 = 2 rows of chrome.
+  // Full:    header ~6 + footer ~5 + margins ~2 = ~13 rows of chrome.
+  const cap = Math.max(3, rows - (compact ? 3 : 13));
   const visible = events.slice(-cap);
   const dropped = events.length - visible.length;
 
   return (
     <Box flexDirection="column">
-      <Header idea={idea} runId={runId} />
-      <Box flexDirection="column" paddingX={1} marginTop={1}>
+      <Header idea={idea} runId={runId} compact={compact} />
+      <Box flexDirection="column" paddingX={1} marginTop={compact ? 0 : 1}>
         {dropped > 0 ? (
           <Text color="gray" dimColor>… {dropped} earlier event{dropped === 1 ? "" : "s"} hidden</Text>
         ) : null}
@@ -347,12 +411,14 @@ export function WatchTui({ idea, eventsPath, exitOnTerminal, demoFeed }: WatchTu
           visible.map((ev, i) => <EventRow key={i + (events.length - visible.length)} ev={ev} />)
         )}
       </Box>
-      <Box marginTop={1}>
+      <Box marginTop={compact ? 0 : 1}>
         <Footer
           events={events}
           startedAt={startedAtRef.current}
           done={done}
           prUrl={prUrl}
+          compact={compact}
+          exitHint={exitHint}
         />
       </Box>
     </Box>
@@ -365,19 +431,23 @@ export interface RenderWatchOptions {
   idea: IdeaSummary;
   eventsPath: string;
   exitOnTerminal?: boolean;
+  exitHint?: string;
   demoFeed?: AsyncIterable<ParsedEvent>;
 }
 
 export async function renderWatchTui(opts: RenderWatchOptions): Promise<void> {
-  const { waitUntilExit } = render(
-    <WatchTui
-      idea={opts.idea}
-      eventsPath={opts.eventsPath}
-      exitOnTerminal={opts.exitOnTerminal}
-      demoFeed={opts.demoFeed}
-    />
-  );
-  await waitUntilExit();
+  await withAltScreen(async () => {
+    const { waitUntilExit } = render(
+      <WatchTui
+        idea={opts.idea}
+        eventsPath={opts.eventsPath}
+        exitOnTerminal={opts.exitOnTerminal}
+        exitHint={opts.exitHint}
+        demoFeed={opts.demoFeed}
+      />
+    );
+    await waitUntilExit();
+  });
 }
 
 // ── demo feed generator ─────────────────────────────────────────────

@@ -87,6 +87,11 @@ export interface ActiveRun {
   startedAt: string;
   latestEvent: ParsedEvent | null;
   eventCount: number;
+  /** True when the latest event is older than the stall threshold —
+   *  builder probably crashed without reaching finalizeRun. Renderer
+   *  shows these dimmed with a different glyph so they don't look
+   *  like active streaming work. */
+  stalled: boolean;
 }
 
 export interface ParsedEvent {
@@ -94,6 +99,14 @@ export interface ParsedEvent {
   type: string;
   data: Record<string, unknown>;
 }
+
+/** Runs idle longer than this are flagged stalled — likely crashed
+ *  builders that died without writing summary.json. Picked
+ *  conservatively: the longest legitimate brainstorm we've observed
+ *  is ~3min; a Claude Code build is bounded by IDEA_HARNESS_BUILDER_
+ *  TIMEOUT_MS (default 30 min) but events stream throughout. 5
+ *  minutes of total silence is a strong "this is wedged" signal. */
+const STALL_THRESHOLD_MS = 5 * 60 * 1000;
 
 /**
  * Scan runs/ for runs that haven't finalized yet. Pure fs read; safe to
@@ -104,6 +117,7 @@ export function scanActiveRuns(runsDir: string): ActiveRun[] {
 
   const entries = fs.readdirSync(runsDir, { withFileTypes: true });
   const out: ActiveRun[] = [];
+  const now = Date.now();
 
   for (const e of entries) {
     if (!e.isDirectory()) continue;
@@ -123,6 +137,10 @@ export function scanActiveRuns(runsDir: string): ActiveRun[] {
     const eventCount = countLines(eventsPath);
     const slug = inferSlug(started, tail) ?? null;
     const verb = inferVerb(tail) ?? started.trigger ?? "run";
+    const lastActivityTs = tail?.ts ?? started.startedAt ?? e.name;
+    const lastActivityMs = new Date(lastActivityTs).getTime();
+    const stalled = !Number.isNaN(lastActivityMs) &&
+      (now - lastActivityMs) > STALL_THRESHOLD_MS;
 
     out.push({
       runId: e.name,
@@ -133,6 +151,7 @@ export function scanActiveRuns(runsDir: string): ActiveRun[] {
       startedAt: started.startedAt ?? e.name,
       latestEvent: tail,
       eventCount,
+      stalled,
     });
   }
 
