@@ -47,6 +47,11 @@ async function main() {
   const RUNS_DIR = path.join(ROOT, "runs");
   const IDEAS_DIR = path.join(ROOT, "ideas");
 
+  // Allow a width override so we can compare wide vs narrow renders.
+  const widthArg = process.argv.find((a) => a.startsWith("--cols="));
+  const cols = widthArg ? parseInt(widthArg.slice("--cols=".length), 10) : 100;
+  (stdout as unknown as { columns: number }).columns = cols;
+
   const snapshot = () => {
     const ideas = listIdeas();
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);

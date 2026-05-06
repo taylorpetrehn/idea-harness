@@ -16,7 +16,7 @@
  */
 
 import * as React from "react";
-import { Box, Text, useApp, useInput, render } from "ink";
+import { Box, Text, useApp, useInput, useStdout, render } from "ink";
 import Spinner from "ink-spinner";
 
 import type { IdeaSummary, IdeaStatus } from "../../lib/ideas";
@@ -151,18 +151,25 @@ function timeOfDay(iso: string): string {
 // ── responsive helpers ──────────────────────────────────────────────
 
 function useTerminalSize(): { cols: number; rows: number } {
-  const [size, setSize] = React.useState({
-    cols: process.stdout.columns ?? 80,
-    rows: process.stdout.rows ?? 30,
-  });
+  // Use Ink's stdout reference so the size matches whatever the renderer
+  // is actually writing to — including a captured stream in the smoke.
+  const { stdout } = useStdout();
+  const read = React.useCallback(
+    () => ({
+      cols: (stdout as unknown as { columns?: number }).columns ?? 80,
+      rows: (stdout as unknown as { rows?: number }).rows ?? 30,
+    }),
+    [stdout]
+  );
+  const [size, setSize] = React.useState(read);
   React.useEffect(() => {
-    const onResize = () => setSize({
-      cols: process.stdout.columns ?? 80,
-      rows: process.stdout.rows ?? 30,
-    });
-    process.stdout.on("resize", onResize);
-    return () => { process.stdout.off("resize", onResize); };
-  }, []);
+    setSize(read());
+    const onResize = () => setSize(read());
+    (stdout as unknown as NodeJS.EventEmitter).on?.("resize", onResize);
+    return () => {
+      (stdout as unknown as NodeJS.EventEmitter).off?.("resize", onResize);
+    };
+  }, [stdout, read]);
   return size;
 }
 
@@ -189,34 +196,47 @@ function NextBar({ next, narrow, cols }: {
   cols: number;
 }) {
   if (!next) {
+    // Single Text element so Ink doesn't wrap each fragment independently.
+    const line = "nothing waiting — capture an idea or run harness brainstorm";
     return (
       <Box paddingX={1}>
         <Text color="gray" dimColor>NEXT  </Text>
-        <Text color="gray">nothing waiting — capture an idea or run </Text>
-        <Text color="cyan">harness brainstorm</Text>
+        <Text color="gray">{truncate(line, cols - 8)}</Text>
       </Box>
     );
   }
   const glyph = actionGlyph(next.idea.recommended_action);
-  // Reserve room for the trailing "<reason>  [k] label" suffix so the
-  // title gets a deterministic budget instead of letting Ink wrap it
-  // mid-word and push everything else onto a second visual row.
   const suffix = `${next.reason}  [${next.primary.key}] ${next.primary.label}`;
-  const titleBudget = Math.max(20, cols - suffix.length - 12);
 
+  if (narrow) {
+    // Two-line vertical layout — title on row 1, action suffix on row 2.
+    const titleBudget = Math.max(20, cols - 8);
+    return (
+      <Box paddingX={1} flexDirection="column">
+        <Box>
+          <Text color="cyan" bold>NEXT </Text>
+          <Text color={glyph.color}> {glyph.glyph} </Text>
+          <Text bold>{truncate(next.idea.title, titleBudget)}</Text>
+        </Box>
+        <Box>
+          <Text color="gray">     {next.reason}  </Text>
+          <Text color="cyan">[{next.primary.key}]</Text>
+          <Text color="gray"> {next.primary.label}</Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  // Wide layout — title and action suffix on one row.
+  const titleBudget = Math.max(20, cols - suffix.length - 12);
   return (
-    <Box paddingX={1} flexDirection={narrow ? "column" : "row"}>
-      <Box>
-        <Text color="cyan" bold>NEXT </Text>
-        <Text color={glyph.color}> {glyph.glyph} </Text>
-        <Text bold>{truncate(next.idea.title, titleBudget)}</Text>
-      </Box>
-      <Box marginLeft={narrow ? 0 : 2}>
-        <Text color="gray">{next.reason}</Text>
-        <Text color="gray">  </Text>
-        <Text color="cyan">[{next.primary.key}]</Text>
-        <Text> {next.primary.label}</Text>
-      </Box>
+    <Box paddingX={1}>
+      <Text color="cyan" bold>NEXT </Text>
+      <Text color={glyph.color}> {glyph.glyph} </Text>
+      <Text bold>{truncate(next.idea.title, titleBudget)}</Text>
+      <Text color="gray">  {next.reason}  </Text>
+      <Text color="cyan">[{next.primary.key}]</Text>
+      <Text color="gray"> {next.primary.label}</Text>
     </Box>
   );
 }
@@ -293,6 +313,17 @@ function AwaitRow({
   // Title gets one row's width minus the row gutter and glyphs.
   const titleBudget = Math.max(20, cols - 6);
 
+  // Pre-compose the metadata strip as a single string so Ink doesn't wrap
+  // each fragment independently and split words like "letsbark / er".
+  const metaParts = [
+    idea.project,
+    verdict,
+    conf,
+    relTime(idea.brainstormed_at || idea.captured_at),
+  ];
+  const metaLine = metaParts.join("  ·  ");
+  const metaBudget = Math.max(20, cols - 6);
+
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Box>
@@ -300,14 +331,8 @@ function AwaitRow({
         <Text color={glyph.color}>{glyph.glyph} </Text>
         <Text bold={selected}>{truncate(idea.title, titleBudget)}</Text>
       </Box>
-      <Box paddingLeft={4} flexDirection={narrow ? "column" : "row"}>
-        <Text color="gray">{idea.project}</Text>
-        <Text color="gray">{narrow ? "" : "  ·  "}</Text>
-        <Text color={glyph.color}>{verdict}</Text>
-        <Text color="gray">{narrow ? "" : "  ·  "}</Text>
-        <Text color="gray">{conf}</Text>
-        <Text color="gray">{narrow ? "" : "  ·  "}</Text>
-        <Text color="gray">{relTime(idea.brainstormed_at || idea.captured_at)}</Text>
+      <Box paddingLeft={4}>
+        <Text color="gray">{truncate(metaLine, metaBudget)}</Text>
       </Box>
       {expanded ? <AwaitDetail idea={idea} narrow={narrow} cols={cols} ideasDir={ideasDir} /> : null}
     </Box>
@@ -324,26 +349,72 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
     () => parseBrainstormSections(ideaFilepath(ideasDir, idea.filename)),
     [idea.filename, ideasDir]
   );
-  // Each detail line lives at paddingLeft 4 + 9-char gutter ("variants ").
-  // Pre-compose into a single string per row so Ink doesn't wrap mid-cell.
-  const lineCap = Math.max(30, cols - 4 - 9 - 1);
+
+  // Width strategy:
+  //   wide  — left gutter "label    " then content on the same line.
+  //   narrow — group header on its own line, content lines indented under it.
+  // Both render content as ONE pre-truncated Text element so Ink never wraps
+  // mid-word inside a row.
+  if (narrow) {
+    const indent = 4;
+    const cap = Math.max(30, cols - indent - 2);
+    return (
+      <Box flexDirection="column" paddingLeft={indent} marginTop={0}>
+        {sections.problem ? (
+          <>
+            <Text color="gray" dimColor>problem</Text>
+            <Text>  {truncate(sections.problem, cap - 2)}</Text>
+          </>
+        ) : null}
+        {sections.variants.length > 0 ? (
+          <Text color="gray" dimColor>variants</Text>
+        ) : null}
+        {sections.variants.slice(0, 3).map((v, i) => {
+          const line = `${i + 1}. ${v.label} — ${v.body}`;
+          return <Text key={i}>  {truncate(line, cap - 2)}</Text>;
+        })}
+        {sections.topRisks.length > 0 ? (
+          <Text color="gray" dimColor>risks</Text>
+        ) : null}
+        {sections.topRisks.slice(0, 2).map((r, i) => (
+          <Box key={i}>
+            <Text>  </Text>
+            <Text color="yellow">▲ </Text>
+            <Text>{truncate(r, cap - 4)}</Text>
+          </Box>
+        ))}
+        {sections.ifAcceptedBuild ? (
+          <>
+            <Text color="gray" dimColor>build</Text>
+            <Text color="green">  {truncate(sections.ifAcceptedBuild, cap - 2)}</Text>
+          </>
+        ) : null}
+      </Box>
+    );
+  }
+
+  // Wide: gutter + content on same line.
+  const gutter = 9;
+  const cap = Math.max(30, cols - 4 - gutter - 1);
+  const pad = (label: string) =>
+    label + " ".repeat(Math.max(1, gutter - label.length));
 
   return (
     <Box flexDirection="column" paddingLeft={4} marginTop={0}>
       {sections.problem ? (
         <Box>
-          <Text color="gray" dimColor>problem  </Text>
-          <Text>{truncate(sections.problem, lineCap)}</Text>
+          <Text color="gray" dimColor>{pad("problem")}</Text>
+          <Text>{truncate(sections.problem, cap)}</Text>
         </Box>
       ) : null}
       {sections.variants.slice(0, 3).map((v, i) => {
         const head = `${i + 1}. ${v.label}`;
-        const headBudget = Math.max(12, Math.min(40, Math.floor(lineCap * 0.45)));
+        const headBudget = Math.max(12, Math.min(40, Math.floor(cap * 0.45)));
         const headTrunc = truncate(head, headBudget);
-        const bodyTrunc = truncate(v.body, lineCap - headTrunc.length - 3);
+        const bodyTrunc = truncate(v.body, cap - headTrunc.length - 3);
         return (
           <Box key={i}>
-            <Text color="gray" dimColor>{i === 0 ? "variants " : "         "}</Text>
+            <Text color="gray" dimColor>{pad(i === 0 ? "variants" : "")}</Text>
             <Text color="cyan" bold>{headTrunc}</Text>
             <Text color="gray"> — </Text>
             <Text>{bodyTrunc}</Text>
@@ -352,15 +423,15 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
       })}
       {sections.topRisks.slice(0, 2).map((r, i) => (
         <Box key={i}>
-          <Text color="gray" dimColor>{i === 0 ? "risks    " : "         "}</Text>
+          <Text color="gray" dimColor>{pad(i === 0 ? "risks" : "")}</Text>
           <Text color="yellow">▲ </Text>
-          <Text>{truncate(r, lineCap)}</Text>
+          <Text>{truncate(r, cap - 2)}</Text>
         </Box>
       ))}
       {sections.ifAcceptedBuild ? (
         <Box>
-          <Text color="gray" dimColor>build    </Text>
-          <Text color="green">{truncate(sections.ifAcceptedBuild, lineCap)}</Text>
+          <Text color="gray" dimColor>{pad("build")}</Text>
+          <Text color="green">{truncate(sections.ifAcceptedBuild, cap)}</Text>
         </Box>
       ) : null}
     </Box>
@@ -425,19 +496,23 @@ function FooterBar({
   narrow: boolean;
   cols: number;
 }) {
-  // Compose hints into rows that each fit within cols. Line breaks happen
-  // at hint boundaries so individual labels never wrap mid-word.
+  // Pack hints into rows so each rendered row fits within cols. The width
+  // of a hint when followed by another is `[k] label  ` = 5 + key + label;
+  // when last on a row it's `[k] label` = 3 + key + label.
   const budget = Math.max(20, cols - 2);
   const rows: { key: string; label: string }[][] = [[]];
-  let used = 0;
   for (const h of hints) {
-    const w = h.key.length + h.label.length + 4; // "[k] label  "
-    if (used + w > budget && rows[rows.length - 1].length > 0) {
-      rows.push([]);
-      used = 0;
+    const row = rows[rows.length - 1];
+    const trial = [...row, h];
+    const rendered = trial.reduce((acc, item, i) => {
+      const last = i === trial.length - 1;
+      return acc + 3 + item.key.length + item.label.length + (last ? 0 : 2);
+    }, 0);
+    if (rendered > budget && row.length > 0) {
+      rows.push([h]);
+    } else {
+      row.push(h);
     }
-    rows[rows.length - 1].push(h);
-    used += w;
   }
 
   return (
@@ -751,20 +826,18 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   return (
     <Box flexDirection="column">
       <Box paddingX={1} marginTop={0}>
-        <Text bold color="cyan">harness </Text>
-        <Text color="gray">— mission control · </Text>
-        <Text bold>{flightRuns.length}</Text>
-        <Text color="gray"> in flight · </Text>
-        <Text bold>{awaiting.length}</Text>
-        <Text color="gray"> awaiting you · </Text>
-        <Text bold>{today.length}</Text>
-        <Text color="gray"> today</Text>
-        {projectFilter ? (
-          <>
-            <Text color="gray">  ·  project </Text>
-            <Text bold color="magenta">{projectFilter}</Text>
-          </>
-        ) : null}
+        {(() => {
+          const stats = `${flightRuns.length} in flight · ${awaiting.length} awaiting you · ${today.length} today`;
+          const projectChip = projectFilter ? `  ·  project ${projectFilter}` : "";
+          // Pre-compose so Ink doesn't split each fragment to a new line.
+          const tail = truncate(`— mission control · ${stats}${projectChip}`, Math.max(20, cols - 10));
+          return (
+            <>
+              <Text bold color="cyan">harness </Text>
+              <Text color="gray">{tail}</Text>
+            </>
+          );
+        })()}
       </Box>
 
       <NextBar next={next} narrow={narrow} cols={cols} />
@@ -772,10 +845,9 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
       <ZoneHeader glyph="◆" label="IN FLIGHT" count={flightRuns.length} color="cyan" />
       {flightRuns.length === 0 ? (
         <Box paddingLeft={4}>
-          <Text color="gray" dimColor>nothing running. </Text>
-          <Text color="gray">try </Text>
-          <Text color="cyan">harness brainstorm</Text>
-          <Text color="gray"> or accept something below.</Text>
+          <Text color="gray">
+            {truncate("nothing running. try `harness brainstorm` or accept something below.", Math.max(20, cols - 6))}
+          </Text>
         </Box>
       ) : (
         flightRuns.slice(0, narrow ? 3 : 5).map((r) => {
@@ -796,7 +868,9 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
       <ZoneHeader glyph="▲" label="AWAITING YOU" count={awaiting.length} color="yellow" />
       {awaiting.length === 0 ? (
         <Box paddingLeft={4}>
-          <Text color="gray" dimColor>inbox zero. nothing brainstormed is waiting.</Text>
+          <Text color="gray" dimColor>
+            {truncate("inbox zero. nothing brainstormed is waiting.", Math.max(20, cols - 6))}
+          </Text>
         </Box>
       ) : (
         awaiting.slice(0, narrow ? 4 : 8).map((i) => {
@@ -818,7 +892,9 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
       <ZoneHeader glyph="✓" label="TODAY" count={today.length} color="green" />
       {today.length === 0 ? (
         <Box paddingLeft={4}>
-          <Text color="gray" dimColor>quiet day. no idea state changes in the last 24h.</Text>
+          <Text color="gray" dimColor>
+            {truncate("quiet day. no idea state changes in the last 24h.", Math.max(20, cols - 6))}
+          </Text>
         </Box>
       ) : (
         today.slice(0, narrow ? 5 : 10).map((t) => {
