@@ -293,7 +293,7 @@ export function parseIdeaFile(filepath: string): IdeaSummary {
   };
 }
 
-interface ParsedVerdict {
+export interface ParsedVerdict {
   recommended_action?: IdeaSummary["recommended_action"];
   confidence?: IdeaSummary["confidence"];
   if_accepted_build?: string;
@@ -307,7 +307,7 @@ interface ParsedVerdict {
  * dm-cohorts run before the schema gate landed). Anything else returns
  * empty fields, and the caller decides whether to warn.
  */
-function parseVerdict(content: string): ParsedVerdict {
+export function parseVerdict(content: string): ParsedVerdict {
   const action = matchBoldLabel(content, "Recommended action");
   const confidence = matchBoldLabel(content, "Confidence");
   const build = matchBoldLabel(content, "If accepted, build");

@@ -71,6 +71,25 @@ slugs (no idea file); pass `includeOrphans: true` for audit views.
 Same-timestamp events stage-rank-sort so capture+brainstorm at the
 same instant render as `↓💭` not `💭↓`.
 
+### Trail glyph keymap
+
+| glyph | stage |
+|---|---|
+| `↓` | captured |
+| `💭` | brainstormed |
+| `▲` | needs-more-thought |
+| `✓` | accepted (also shipped) |
+| `✗` | rejected |
+| `◆` | build started |
+| `★` | PR opened |
+| `⚡` | auto-flowed by the engine — injected before the
+       accepted/rejected glyph when `IDEA_HARNESS_AUTO_FLOW=true`
+       drove the transition (e.g., `↓💭⚡✓`). The NEXT bar also
+       prefixes `⚡` when its picked idea was auto-flowed; the
+       AWAITING YOU empty state swaps inbox-zero copy for an
+       auto-flow tally. See README "Auto-flow" for the full
+       semantics. |
+
 `scanActiveRuns` flags runs as `stalled: true` when their latest
 event is > 5 minutes old. The renderer paints these with `⏸`
 instead of the spinner so a wedged builder doesn't look like it's

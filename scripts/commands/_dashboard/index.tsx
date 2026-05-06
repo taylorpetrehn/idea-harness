@@ -214,10 +214,13 @@ function ZoneHeader({
   );
 }
 
-function NextBar({ next, narrow, cols }: {
+function NextBar({ next, narrow, cols, autoFlowed }: {
   next: ReturnType<typeof computeNext>;
   narrow: boolean;
   cols: number;
+  /** Set when the picked idea was auto-flowed by the engine — renders a
+   *  `⚡` prefix so the human always sees the machine acted on this. */
+  autoFlowed?: boolean;
 }) {
   if (!next) {
     // Single Text element so Ink doesn't wrap each fragment independently.
@@ -234,11 +237,12 @@ function NextBar({ next, narrow, cols }: {
 
   if (narrow) {
     // Two-line vertical layout — title on row 1, action suffix on row 2.
-    const titleBudget = Math.max(20, cols - 8);
+    const titleBudget = Math.max(20, cols - 8 - (autoFlowed ? 2 : 0));
     return (
       <Box paddingX={1} flexDirection="column">
         <Box>
           <Text color="cyan" bold>NEXT </Text>
+          {autoFlowed ? <Text color="yellow" bold>⚡ </Text> : null}
           <Text color={glyph.color}> {glyph.glyph} </Text>
           <Text bold>{truncate(next.idea.title, titleBudget)}</Text>
         </Box>
@@ -252,10 +256,11 @@ function NextBar({ next, narrow, cols }: {
   }
 
   // Wide layout — title and action suffix on one row.
-  const titleBudget = Math.max(20, cols - suffix.length - 12);
+  const titleBudget = Math.max(20, cols - suffix.length - 12 - (autoFlowed ? 2 : 0));
   return (
     <Box paddingX={1}>
       <Text color="cyan" bold>NEXT </Text>
+      {autoFlowed ? <Text color="yellow" bold>⚡ </Text> : null}
       <Text color={glyph.color}> {glyph.glyph} </Text>
       <Text bold>{truncate(next.idea.title, titleBudget)}</Text>
       <Text color="gray">  {next.reason}  </Text>
@@ -503,7 +508,11 @@ function TodayRow({ entry, selected, narrow, cols }: {
   // Trail glyphs in chronological order (oldest first). The latest stage
   // drives the trail's color so the eye lands on "where this idea is now"
   // without losing the progression.
-  const trail = entry.trail.map((k) => todayGlyph(k).glyph).join("");
+  //
+  // Auto-flowed lifecycles inject a `⚡` immediately before the
+  // accepted/rejected glyph so the eye reads "captured, brainstormed,
+  // *engine acted*, accepted/rejected" — example: ↓💭⚡✓
+  const trail = buildTrailGlyphs(entry).join("");
   const trailColor = todayGlyph(entry.latestKind).color;
 
   // 4 gutter + 6 time + 2 sp + trail + 1 sp + prSuffix = overhead.
@@ -525,6 +534,17 @@ function TodayRow({ entry, selected, narrow, cols }: {
       ) : null}
     </Box>
   );
+}
+
+export function buildTrailGlyphs(entry: LifecycleEntry): string[] {
+  const out: string[] = [];
+  for (const k of entry.trail) {
+    if (entry.autoFlowed && (k === "accepted" || k === "rejected")) {
+      out.push("⚡");
+    }
+    out.push(todayGlyph(k).glyph);
+  }
+  return out;
 }
 
 function todayGlyph(kind: TodayEntry["kind"]): { glyph: string; color: string } {
@@ -1329,9 +1349,11 @@ function DashboardZones(p: DashboardZonesProps) {
     unfilteredFlightCount, unfilteredAwaitCount, unfilteredTodayCount, filterActive,
     ideaBySlug, state, selected, expandedAwait, ideasDir,
   } = p;
+  const autoFlowedSlugs = new Set(today.filter((e) => e.autoFlowed).map((e) => e.slug));
+  const nextAutoFlowed = !!next && autoFlowedSlugs.has(next.idea.slug);
   return (
     <>
-      <NextBar next={next} narrow={narrow} cols={cols} />
+      <NextBar next={next} narrow={narrow} cols={cols} autoFlowed={nextAutoFlowed} />
 
       <ZoneHeader glyph="◆" label="IN FLIGHT" count={flightRuns.length} color="cyan" />
       {flightRuns.length === 0 ? (
@@ -1368,7 +1390,9 @@ function DashboardZones(p: DashboardZonesProps) {
             {truncate(
               filterActive && unfilteredAwaitCount > 0
                 ? `0 of ${unfilteredAwaitCount} awaiting ideas match the filter — press / or p to clear.`
-                : "inbox zero. nothing brainstormed is waiting.",
+                : autoFlowedSlugs.size > 0
+                  ? `auto-flow handled ${autoFlowedSlugs.size} idea${autoFlowedSlugs.size === 1 ? "" : "s"} — press [enter] to see TODAY`
+                  : "inbox zero. nothing brainstormed is waiting.",
               Math.max(20, cols - 6)
             )}
           </Text>

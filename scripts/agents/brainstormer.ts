@@ -24,7 +24,8 @@ import { BrainstormItem } from "./initializer";
 import { Run } from "../lib/runs";
 import { loadTier1Context, loadTier2, Tier2Request } from "../lib/context";
 import { callBrainstormerModel } from "../lib/llm";
-import { setStatusInFile, appendNote } from "../lib/ideas";
+import { setStatusInFile, appendNote, parseVerdict } from "../lib/ideas";
+import { appendJournal } from "../lib/journal";
 import { log } from "../lib/log";
 import { BUDGETS } from "../lib/budgets";
 
@@ -211,6 +212,7 @@ export async function brainstorm(
       fs.writeFileSync(filepath, content, "utf8");
       setStatusInFile(filepath, "brainstormed");
       log.info(`    ✓ Wrote brainstorm to ${path.basename(filepath)}`);
+      maybeAutoFlow(filepath, output);
     },
 
     commitAsNeedsCriticReview: async (feedback: string) => {
@@ -263,6 +265,47 @@ function extractFrontmatterValue(text: string, key: string): string | null {
   if (!m) return null;
   const v = m[1].trim().replace(/^"|"$/g, "");
   return v === "~" ? null : v;
+}
+
+/**
+ * If `IDEA_HARNESS_AUTO_FLOW=true` and the just-committed brainstorm
+ * carries a high-confidence accept/reject verdict, promote the idea
+ * past the human gate. Default off — every other case stays
+ * `brainstormed` for human review. The action is journaled both
+ * via `idea.status` (the regular flip) and `idea.auto_flowed` (the
+ * dedicated event the dashboard tags `⚡` from).
+ *
+ * Exported solely for the auto-flow smoke. Nothing else outside
+ * `brainstorm()` should call this.
+ */
+export function maybeAutoFlow(filepath: string, output: string): void {
+  if (process.env.IDEA_HARNESS_AUTO_FLOW !== "true") return;
+  const verdict = parseVerdict(output);
+  if (verdict.confidence !== "high") return;
+  const next =
+    verdict.recommended_action === "accept"
+      ? "accepted"
+      : verdict.recommended_action === "reject"
+        ? "rejected"
+        : null;
+  if (!next) return;
+
+  setStatusInFile(filepath, next);
+  appendNote(
+    filepath,
+    `Auto-flowed by brainstorm (verdict: ${verdict.recommended_action}, confidence: high)`
+  );
+  appendJournal({
+    type: "idea.auto_flowed",
+    slug: path.basename(filepath, ".md"),
+    data: {
+      from: "brainstormed",
+      to: next,
+      verdict: verdict.recommended_action,
+      confidence: verdict.confidence,
+    },
+  });
+  log.info(`    ⚡ Auto-flowed ${path.basename(filepath)} → ${next}`);
 }
 
 function dedupeRequests(

@@ -332,6 +332,10 @@ export interface TodayEntry {
   slug: string;
   title?: string;
   detail?: string;
+  /** True when this transition was made by the engine (auto-flow) rather
+   *  than the human. The renderer surfaces a `⚡` glyph so the user
+   *  always sees what the machine decided. */
+  autoFlowed?: boolean;
 }
 
 /**
@@ -378,6 +382,7 @@ export function buildTodayFeed(
       const dupDetailIsUrl = dup.detail?.startsWith("http");
       if (eDetailIsUrl && !dupDetailIsUrl) dup.detail = e.detail;
       else if (!dup.detail && e.detail) dup.detail = e.detail;
+      if (e.autoFlowed) dup.autoFlowed = true;
       continue;
     }
     deduped.push(e);
@@ -403,6 +408,9 @@ export interface LifecycleEntry {
   latestKind: TodayEntry["kind"];
   /** PR URL if the lifecycle reached pr-open / shipped. */
   prUrl?: string;
+  /** True if any transition in the trail was auto-flowed by the engine.
+   *  Drives the `⚡` glyph in the lifecycle row + NEXT bar prefix. */
+  autoFlowed?: boolean;
 }
 
 /**
@@ -451,6 +459,7 @@ export function buildTodayLifecycle(
     if (e.kind === "pr-open" && e.detail?.startsWith("http") && !entry.prUrl) {
       entry.prUrl = e.detail;
     }
+    if (e.autoFlowed) entry.autoFlowed = true;
     if (!entry.title && e.title) entry.title = e.title;
   }
 
@@ -524,6 +533,12 @@ function mapJournalEntry(
       title,
       detail: typeof e.data.value === "string" ? e.data.value : undefined,
     };
+  }
+  if (e.type === "idea.auto_flowed") {
+    const to = (e.data?.to ?? "") as IdeaStatus;
+    const kind: TodayEntry["kind"] =
+      to === "accepted" ? "accepted" : to === "rejected" ? "rejected" : "other";
+    return { ts: e.ts, kind, slug, title, autoFlowed: true };
   }
   return null;
 }

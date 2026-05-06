@@ -298,7 +298,34 @@ called "App Ideas", then `harness brainstorm`.
 | `IDEA_HARNESS_REPO_<KEY>` | repo path override per project | from `projects.yml` |
 | `IDEA_HARNESS_PER_IDEA_TARGET` | soft token target per brainstorm | 10000 |
 | `IDEA_HARNESS_PER_RUN_CAP` | hard run-level token cap | 100000 |
+| `IDEA_HARNESS_AUTO_FLOW` | when `true`, the brainstormer auto-promotes high-confidence accept/reject verdicts past the human gate (see "Auto-flow" below) | `false` |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info`, `debug` | `info` |
+
+## Auto-flow
+
+After each brainstorm commit, the harness checks the verdict:
+
+- `Recommended action: accept` + `Confidence: high` → idea status flips
+  straight to `accepted` (skipping AWAITING YOU).
+- `Recommended action: reject` + `Confidence: high` → idea status flips
+  straight to `rejected`.
+- Any other combination (medium/low confidence, `needs-more-thought`)
+  stays at `brainstormed` for human review — no behavior change.
+
+Auto-flow is **opt-in**: set `IDEA_HARNESS_AUTO_FLOW=true` to enable.
+Default is off. Every auto-decision is journaled (`idea.auto_flowed`)
+and reversible — `harness review accept|reject|needs-more-thought
+<slug>` overrides at any time, and the journal preserves both decisions.
+
+The dashboard surfaces auto-flow visibly:
+
+- TODAY trail glyph: `⚡` injected before the accepted/rejected
+  glyph (e.g., `↓💭⚡✓` for "captured, brainstormed,
+  auto-accepted").
+- NEXT bar: `⚡` prefix on auto-flowed picks.
+- AWAITING YOU empty state: when auto-flow has handled ideas, the
+  inbox-zero message swaps to "auto-flow handled N ideas — press
+  [enter] to see TODAY".
 
 ## Why This Shape
 
