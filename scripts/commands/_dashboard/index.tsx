@@ -1241,6 +1241,10 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
           flightRuns={flightRuns}
           awaiting={awaiting}
           today={today}
+          unfilteredFlightCount={state.runs.length}
+          unfilteredAwaitCount={awaitingIdeas(state.ideas).length}
+          unfilteredTodayCount={state.today.length}
+          filterActive={!!projectFilter || !!searchFilter}
           ideaBySlug={ideaBySlug}
           state={state}
           selected={selected}
@@ -1306,6 +1310,12 @@ interface DashboardZonesProps {
   flightRuns: ActiveRun[];
   awaiting: IdeaSummary[];
   today: LifecycleEntry[];
+  /** Pre-filter counts so empty-states can distinguish "0 of N match"
+   *  (clear the filter) from "0 total" (genuinely nothing here). */
+  unfilteredFlightCount: number;
+  unfilteredAwaitCount: number;
+  unfilteredTodayCount: number;
+  filterActive: boolean;
   ideaBySlug: Map<string, IdeaSummary>;
   state: DashboardState;
   selected: Selectable | undefined;
@@ -1314,7 +1324,11 @@ interface DashboardZonesProps {
 }
 
 function DashboardZones(p: DashboardZonesProps) {
-  const { next, narrow, cols, flightRuns, awaiting, today, ideaBySlug, state, selected, expandedAwait, ideasDir } = p;
+  const {
+    next, narrow, cols, flightRuns, awaiting, today,
+    unfilteredFlightCount, unfilteredAwaitCount, unfilteredTodayCount, filterActive,
+    ideaBySlug, state, selected, expandedAwait, ideasDir,
+  } = p;
   return (
     <>
       <NextBar next={next} narrow={narrow} cols={cols} />
@@ -1323,7 +1337,12 @@ function DashboardZones(p: DashboardZonesProps) {
       {flightRuns.length === 0 ? (
         <Box paddingLeft={4}>
           <Text color="gray">
-            {truncate("nothing running. try `harness brainstorm` or accept something below.", Math.max(20, cols - 6))}
+            {truncate(
+              filterActive && unfilteredFlightCount > 0
+                ? `0 of ${unfilteredFlightCount} active runs match the filter — press / or p to clear.`
+                : "nothing running. try `harness brainstorm` or accept something below.",
+              Math.max(20, cols - 6)
+            )}
           </Text>
         </Box>
       ) : (
@@ -1346,7 +1365,12 @@ function DashboardZones(p: DashboardZonesProps) {
       {awaiting.length === 0 ? (
         <Box paddingLeft={4}>
           <Text color="gray" dimColor>
-            {truncate("inbox zero. nothing brainstormed is waiting.", Math.max(20, cols - 6))}
+            {truncate(
+              filterActive && unfilteredAwaitCount > 0
+                ? `0 of ${unfilteredAwaitCount} awaiting ideas match the filter — press / or p to clear.`
+                : "inbox zero. nothing brainstormed is waiting.",
+              Math.max(20, cols - 6)
+            )}
           </Text>
         </Box>
       ) : (
@@ -1370,7 +1394,12 @@ function DashboardZones(p: DashboardZonesProps) {
       {today.length === 0 ? (
         <Box paddingLeft={4}>
           <Text color="gray" dimColor>
-            {truncate("quiet day. no idea state changes in the last 24h.", Math.max(20, cols - 6))}
+            {truncate(
+              filterActive && unfilteredTodayCount > 0
+                ? `0 of ${unfilteredTodayCount} today entries match the filter — press / or p to clear.`
+                : "quiet day. no idea state changes in the last 24h.",
+              Math.max(20, cols - 6)
+            )}
           </Text>
         </Box>
       ) : (
