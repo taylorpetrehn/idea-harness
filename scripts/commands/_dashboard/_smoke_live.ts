@@ -113,7 +113,7 @@ async function main() {
       initial: snapshot(),
       refresh: snapshot,
       ideasDir: IDEAS_DIR,
-      callbacks: { onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {}, onCapture: () => null, onSpawnVerb: () => ({ detached: false }) },
+      callbacks: { onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {}, onCapture: () => null, onSpawnVerb: () => ({ detached: false }), onAbandonRun: () => ({ ok: false }) },
       onAction: () => {},
     }),
     { stdout, stdin, exitOnCtrlC: false, patchConsole: false }

@@ -89,6 +89,7 @@ async function main() {
           return { slug: created.slug, project: created.project };
         },
         onSpawnVerb: () => ({ detached: false }),
+          onAbandonRun: () => ({ ok: false }),
       },
       onAction: () => {},
     }),

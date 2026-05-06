@@ -56,6 +56,11 @@ export interface DashboardCallbacks {
    *  ship) will surface in IN FLIGHT once their events.ndjson appears.
    *  Quick verbs (doctor) return a one-line summary to display inline. */
   onSpawnVerb(verb: string): { detached: boolean; message?: string };
+  /** Mark a stalled run as crashed. Writes summary.json so the run drops
+   *  out of IN FLIGHT on the next refresh; lifecycle audit captures that
+   *  it never reached PR. Returns false if the run isn't stalled (the
+   *  dashboard already gates this, but the callback validates too). */
+  onAbandonRun(runId: string): { ok: boolean; message?: string };
 }
 
 // ── selection model ─────────────────────────────────────────────────
@@ -566,6 +571,7 @@ function HelpOverlay({ cols }: { cols: number }) {
       title: "in flight",
       rows: [
         { keys: "enter",    label: "zoom into watch TUI fullscreen" },
+        { keys: "x",        label: "abandon (stalled rows only — writes summary.json)" },
       ],
     },
     {
@@ -876,9 +882,14 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const ideaBySlug = ideaBySlugRaw;
 
   // Context-aware action hints derived from the selected row.
+  const selectedRunStalled = React.useMemo(() => {
+    if (selected?.zone !== "flight") return false;
+    const run = state.runs.find((r) => r.runId === selected.runId);
+    return run?.stalled === true;
+  }, [selected, state.runs]);
   const hints = React.useMemo(
-    () => buildHints(selected, ideaBySlug, projects.length > 0),
-    [selected, ideaBySlug, projects.length]
+    () => buildHints(selected, ideaBySlug, projects.length > 0, selectedRunStalled),
+    [selected, ideaBySlug, projects.length, selectedRunStalled]
   );
 
   // Palette options. Each entry runs as a child of the harness CLI;
@@ -1094,12 +1105,26 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     if (!selected) return;
 
     if (selected.zone === "flight") {
+      const run = state.runs.find((r) => r.runId === selected.runId);
+      if (!run) return;
       if (key.return) {
-        const run = state.runs.find((r) => r.runId === selected.runId);
-        if (!run) return;
         const idea = run.slug ? ideaBySlug.get(run.slug) : undefined;
         onAction({ kind: "watch", run, idea });
         exit();
+        return;
+      }
+      if (input === "x") {
+        if (!run.stalled) {
+          setMessage("only stalled runs can be abandoned (idle > 5 min).");
+          return;
+        }
+        try {
+          const r = callbacks.onAbandonRun(run.runId);
+          if (r.ok) setMessage(r.message ?? `✗ abandoned ${run.runId}.`);
+          else setMessage(r.message ?? "abandon failed.");
+        } catch (err) {
+          setMessage(`abandon failed: ${(err as Error).message}`);
+        }
         return;
       }
     }
@@ -1363,7 +1388,8 @@ function DashboardZones(p: DashboardZonesProps) {
 function buildHints(
   selected: Selectable | undefined,
   ideaBySlug: Map<string, IdeaSummary>,
-  hasProjects: boolean
+  hasProjects: boolean,
+  selectedRunStalled: boolean = false
 ): { key: string; label: string }[] {
   const base: { key: string; label: string }[] = [
     { key: "↑↓", label: "select" },
@@ -1372,6 +1398,7 @@ function buildHints(
   // Per-zone primary actions
   if (selected?.zone === "flight") {
     base.push({ key: "enter", label: "watch" });
+    if (selectedRunStalled) base.push({ key: "x", label: "abandon" });
   } else if (selected?.zone === "await") {
     const idea = ideaBySlug.get(selected.slug);
     if (idea) {

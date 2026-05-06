@@ -96,6 +96,7 @@ export async function run(_args: DashboardArgs, out: Output): Promise<void> {
           return { slug: created.slug, project: created.project };
         },
         onSpawnVerb: (verb) => spawnVerbFromDashboard(verb),
+        onAbandonRun: (runId) => abandonRunFromDashboard(runId),
       },
     });
 
@@ -207,6 +208,44 @@ function safeReaddir(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Mark a stalled run as crashed so it drops out of IN FLIGHT. Writes
+ * summary.json — same artifact finalizeRun would have written had
+ * the verb completed normally. The lifecycle audit captures that
+ * the run never reached PR; the dashboard's TODAY zone picks up
+ * the closure as a `crashed` outcome.
+ */
+function abandonRunFromDashboard(runId: string): { ok: boolean; message?: string } {
+  const dir = path.join(RUNS_DIR, runId);
+  if (!fs.existsSync(dir)) return { ok: false, message: `run dir not found: ${runId}` };
+  const summaryPath = path.join(dir, "summary.json");
+  if (fs.existsSync(summaryPath)) return { ok: false, message: "run already finalized." };
+
+  const startedPath = path.join(dir, "started.json");
+  let startedAt = new Date().toISOString();
+  let slug: string | null = null;
+  try {
+    const started = JSON.parse(fs.readFileSync(startedPath, "utf8"));
+    if (typeof started.startedAt === "string") startedAt = started.startedAt;
+    if (typeof started.flags?.slug === "string") slug = started.flags.slug;
+  } catch { /* tolerable — fall back to defaults */ }
+
+  const finishedAt = new Date().toISOString();
+  const summary = {
+    status: "complete",
+    slug,
+    intent: "abandoned",
+    outcome: "crashed",
+    run_id: runId,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    duration_ms: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
+    abandoned_from: "dashboard",
+  };
+  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2), "utf8");
+  return { ok: true, message: `✗ abandoned ${runId}` };
 }
 
 /**

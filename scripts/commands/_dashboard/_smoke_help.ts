@@ -61,6 +61,7 @@ async function main() {
           onNeedsMoreThought: () => {},
           onCapture: () => null,
           onSpawnVerb: () => ({ detached: false }),
+          onAbandonRun: () => ({ ok: false }),
         },
         onAction: () => {},
       }),
@@ -106,6 +107,7 @@ async function main() {
         callbacks: {
           onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {},
           onCapture: () => null, onSpawnVerb: () => ({ detached: false }),
+          onAbandonRun: () => ({ ok: false }),
         },
         onAction: () => {},
       }),
@@ -141,6 +143,7 @@ async function main() {
         callbacks: {
           onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {},
           onCapture: () => null, onSpawnVerb: () => ({ detached: false }),
+          onAbandonRun: () => ({ ok: false }),
         },
         onAction: () => {},
       }),
@@ -172,6 +175,7 @@ async function main() {
           onAccept: () => {}, onReject: () => {}, onNeedsMoreThought: () => {},
           onCapture: () => { captureCalled++; return null; },
           onSpawnVerb: () => ({ detached: false }),
+          onAbandonRun: () => ({ ok: false }),
         },
         onAction: () => {},
       }),
