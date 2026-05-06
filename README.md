@@ -27,6 +27,11 @@ npm link             # makes `harness` available on PATH
 # 3. Verify your environment
 harness doctor
 
+# Optional: run the dashboard smoke suite (16 suites, ~33s)
+npm test             # full suite
+npm run test:quick   # skip the long build-spawn smoke (~2s)
+npm run check        # tsc + smokes (use before committing)
+
 # 4. Open the dashboard — your home base.
 harness                       # mission control (no args)
 ```
