@@ -277,24 +277,28 @@ function AwaitRow({
   selected,
   expanded,
   narrow,
+  cols,
   ideasDir,
 }: {
   idea: IdeaSummary;
   selected: boolean;
   expanded: boolean;
   narrow: boolean;
+  cols: number;
   ideasDir: string;
 }) {
   const glyph = actionGlyph(idea.recommended_action);
   const conf = idea.confidence ? `${idea.confidence} conf` : "low signal";
   const verdict = idea.recommended_action ?? "no verdict";
+  // Title gets one row's width minus the row gutter and glyphs.
+  const titleBudget = Math.max(20, cols - 6);
 
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Box>
         <Text color={selected ? "cyan" : "gray"}>{selected ? "▸ " : "  "}</Text>
         <Text color={glyph.color}>{glyph.glyph} </Text>
-        <Text bold={selected}>{truncate(idea.title, narrow ? 50 : 70)}</Text>
+        <Text bold={selected}>{truncate(idea.title, titleBudget)}</Text>
       </Box>
       <Box paddingLeft={4} flexDirection={narrow ? "column" : "row"}>
         <Text color="gray">{idea.project}</Text>
@@ -305,17 +309,24 @@ function AwaitRow({
         <Text color="gray">{narrow ? "" : "  ·  "}</Text>
         <Text color="gray">{relTime(idea.brainstormed_at || idea.captured_at)}</Text>
       </Box>
-      {expanded ? <AwaitDetail idea={idea} narrow={narrow} ideasDir={ideasDir} /> : null}
+      {expanded ? <AwaitDetail idea={idea} narrow={narrow} cols={cols} ideasDir={ideasDir} /> : null}
     </Box>
   );
 }
 
-function AwaitDetail({ idea, narrow, ideasDir }: { idea: IdeaSummary; narrow: boolean; ideasDir: string }) {
+function AwaitDetail({ idea, narrow, cols, ideasDir }: {
+  idea: IdeaSummary;
+  narrow: boolean;
+  cols: number;
+  ideasDir: string;
+}) {
   const sections = React.useMemo(
     () => parseBrainstormSections(ideaFilepath(ideasDir, idea.filename)),
     [idea.filename, ideasDir]
   );
-  const lineCap = narrow ? 60 : 100;
+  // Each detail line lives at paddingLeft 4 + 9-char gutter ("variants ").
+  // Pre-compose into a single string per row so Ink doesn't wrap mid-cell.
+  const lineCap = Math.max(30, cols - 4 - 9 - 1);
 
   return (
     <Box flexDirection="column" paddingLeft={4} marginTop={0}>
@@ -325,15 +336,20 @@ function AwaitDetail({ idea, narrow, ideasDir }: { idea: IdeaSummary; narrow: bo
           <Text>{truncate(sections.problem, lineCap)}</Text>
         </Box>
       ) : null}
-      {sections.variants.slice(0, 3).map((v, i) => (
-        <Box key={i}>
-          <Text color="gray" dimColor>{i === 0 ? "variants " : "         "}</Text>
-          <Text color="cyan">{i + 1}. </Text>
-          <Text bold>{truncate(v.label, 32)}</Text>
-          <Text color="gray"> — </Text>
-          <Text>{truncate(v.body, lineCap - v.label.length - 8)}</Text>
-        </Box>
-      ))}
+      {sections.variants.slice(0, 3).map((v, i) => {
+        const head = `${i + 1}. ${v.label}`;
+        const headBudget = Math.max(12, Math.min(40, Math.floor(lineCap * 0.45)));
+        const headTrunc = truncate(head, headBudget);
+        const bodyTrunc = truncate(v.body, lineCap - headTrunc.length - 3);
+        return (
+          <Box key={i}>
+            <Text color="gray" dimColor>{i === 0 ? "variants " : "         "}</Text>
+            <Text color="cyan" bold>{headTrunc}</Text>
+            <Text color="gray"> — </Text>
+            <Text>{bodyTrunc}</Text>
+          </Box>
+        );
+      })}
       {sections.topRisks.slice(0, 2).map((r, i) => (
         <Box key={i}>
           <Text color="gray" dimColor>{i === 0 ? "risks    " : "         "}</Text>
@@ -402,21 +418,41 @@ function FooterBar({
   hints,
   message,
   narrow,
+  cols,
 }: {
   hints: { key: string; label: string }[];
   message: string | null;
   narrow: boolean;
+  cols: number;
 }) {
+  // Compose hints into rows that each fit within cols. Line breaks happen
+  // at hint boundaries so individual labels never wrap mid-word.
+  const budget = Math.max(20, cols - 2);
+  const rows: { key: string; label: string }[][] = [[]];
+  let used = 0;
+  for (const h of hints) {
+    const w = h.key.length + h.label.length + 4; // "[k] label  "
+    if (used + w > budget && rows[rows.length - 1].length > 0) {
+      rows.push([]);
+      used = 0;
+    }
+    rows[rows.length - 1].push(h);
+    used += w;
+  }
+
   return (
     <Box paddingX={1} flexDirection="column">
-      <Box flexWrap={narrow ? "wrap" : undefined}>
-        {hints.map((h, i) => (
-          <Box key={i} marginRight={2}>
-            <Text color="cyan">[{h.key}]</Text>
-            <Text> {h.label}</Text>
-          </Box>
-        ))}
-      </Box>
+      {rows.map((row, ri) => (
+        <Box key={ri}>
+          {row.map((h, i) => (
+            <React.Fragment key={i}>
+              <Text color="cyan">[{h.key}]</Text>
+              <Text> {h.label}</Text>
+              {i < row.length - 1 ? <Text>  </Text> : null}
+            </React.Fragment>
+          ))}
+        </Box>
+      ))}
       {message ? (
         <Box>
           <Text color="yellow">! </Text>
@@ -452,6 +488,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const [cursor, setCursor] = React.useState<number>(0);
   const [expandedAwait, setExpandedAwait] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
+  const [projectFilter, setProjectFilter] = React.useState<string | null>(null);
 
   const fleetRef = React.useRef<WatcherFleet | null>(null);
   if (!fleetRef.current) fleetRef.current = new WatcherFleet();
@@ -494,14 +531,53 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     return () => fleetRef.current?.stopAll();
   }, []);
 
-  // Build the unified selectable list.
+  // Available project facets — drawn from currently-loaded ideas.
+  const projects = React.useMemo(() => {
+    return Array.from(new Set(state.ideas.map((i) => i.project).filter(Boolean))).sort();
+  }, [state.ideas]);
+
+  // Filter sets — pre-compute once per render so all zones see the same view.
+  const ideaBySlugRaw = React.useMemo(() => {
+    const m = new Map<string, IdeaSummary>();
+    for (const i of state.ideas) m.set(i.slug, i);
+    return m;
+  }, [state.ideas]);
+
+  const filteredRuns = React.useMemo(() => {
+    if (!projectFilter) return state.runs;
+    return state.runs.filter((r) => {
+      if (!r.slug) return false;
+      const idea = ideaBySlugRaw.get(r.slug);
+      return idea?.project === projectFilter;
+    });
+  }, [state.runs, projectFilter, ideaBySlugRaw]);
+
+  const filteredAwaiting = React.useMemo(() => {
+    const all = awaitingIdeas(state.ideas);
+    return projectFilter ? all.filter((i) => i.project === projectFilter) : all;
+  }, [state.ideas, projectFilter]);
+
+  const filteredToday = React.useMemo(() => {
+    if (!projectFilter) return state.today;
+    return state.today.filter((t) => {
+      const idea = ideaBySlugRaw.get(t.slug);
+      return idea?.project === projectFilter;
+    });
+  }, [state.today, projectFilter, ideaBySlugRaw]);
+
+  // Build the unified selectable list against filtered slices.
   const items: Selectable[] = React.useMemo(() => {
     const out: Selectable[] = [];
-    for (const r of state.runs) out.push({ zone: "flight", runId: r.runId });
-    for (const i of awaitingIdeas(state.ideas)) out.push({ zone: "await", slug: i.slug });
-    for (const t of state.today) out.push({ zone: "today", ts: t.ts + ":" + t.slug });
+    for (const r of filteredRuns) out.push({ zone: "flight", runId: r.runId });
+    for (const i of filteredAwaiting) out.push({ zone: "await", slug: i.slug });
+    for (const t of filteredToday) out.push({ zone: "today", ts: t.ts + ":" + t.slug });
     return out;
-  }, [state]);
+  }, [filteredRuns, filteredAwaiting, filteredToday]);
+
+  /** First selectable index belonging to a given zone — Tab jumps here. */
+  const zoneStart = (zone: Selectable["zone"]): number => {
+    return items.findIndex((s) => s.zone === zone);
+  };
 
   // Clamp cursor when the item list shrinks.
   React.useEffect(() => {
@@ -514,14 +590,13 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
 
   const next = React.useMemo(() => computeNext(state.ideas), [state.ideas]);
   const selected = items[cursor];
-  const ideaBySlug = React.useMemo(() => {
-    const m = new Map<string, IdeaSummary>();
-    for (const i of state.ideas) m.set(i.slug, i);
-    return m;
-  }, [state.ideas]);
+  const ideaBySlug = ideaBySlugRaw;
 
   // Context-aware action hints derived from the selected row.
-  const hints = React.useMemo(() => buildHints(selected, ideaBySlug), [selected, ideaBySlug]);
+  const hints = React.useMemo(
+    () => buildHints(selected, ideaBySlug, projects.length > 0),
+    [selected, ideaBySlug, projects.length]
+  );
 
   // Keyboard
   useInput((input, key) => {
@@ -542,6 +617,40 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     }
     if (input === "g") { setCursor(0); return; }
     if (input === "G") { setCursor(Math.max(0, items.length - 1)); return; }
+
+    // Tab cycles between zones; pressing it lands on the first row of the
+    // next non-empty zone after the current selection.
+    if (key.tab) {
+      const order: Selectable["zone"][] = ["flight", "await", "today"];
+      const currentZone = selected?.zone ?? "flight";
+      const i = order.indexOf(currentZone);
+      for (let step = 1; step <= order.length; step++) {
+        const target = order[(i + step) % order.length];
+        const idx = zoneStart(target);
+        if (idx >= 0) {
+          setCursor(idx);
+          setMessage(null);
+          return;
+        }
+      }
+      return;
+    }
+
+    // Project filter cycles: null → projects[0] → … → null.
+    if (input === "p") {
+      if (projects.length === 0) {
+        setMessage("no projects to filter — capture an idea first.");
+        return;
+      }
+      setProjectFilter((cur) => {
+        const idx = cur === null ? -1 : projects.indexOf(cur);
+        const nextIdx = idx + 1;
+        return nextIdx >= projects.length ? null : projects[nextIdx];
+      });
+      setCursor(0);
+      setMessage(null);
+      return;
+    }
 
     // Per-zone keybinds
     if (!selected) return;
@@ -634,15 +743,10 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     }
   });
 
-  // Render
-  const visible = items;  // Future: virtualize. For 50 ideas this is fine.
-
-  // Determine an upper-bound height for rendering — we want zones to
-  // collapse rather than scroll past the bottom. For now we let Ink
-  // flow and just cap each zone's row count.
-  const flightRuns = state.runs;
-  const awaiting = awaitingIdeas(state.ideas);
-  const today = state.today;
+  // Render against filtered slices (project filter applied above).
+  const flightRuns = filteredRuns;
+  const awaiting = filteredAwaiting;
+  const today = filteredToday;
 
   return (
     <Box flexDirection="column">
@@ -655,6 +759,12 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
         <Text color="gray"> awaiting you · </Text>
         <Text bold>{today.length}</Text>
         <Text color="gray"> today</Text>
+        {projectFilter ? (
+          <>
+            <Text color="gray">  ·  project </Text>
+            <Text bold color="magenta">{projectFilter}</Text>
+          </>
+        ) : null}
       </Box>
 
       <NextBar next={next} narrow={narrow} cols={cols} />
@@ -698,6 +808,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
               selected={sel}
               expanded={sel || expandedAwait.has(i.slug)}
               narrow={narrow}
+              cols={cols}
               ideasDir={ideasDir}
             />
           );
@@ -718,7 +829,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
       )}
 
       <Box marginTop={1}>
-        <FooterBar hints={hints} message={message} narrow={narrow} />
+        <FooterBar hints={hints} message={message} narrow={narrow} cols={cols} />
       </Box>
     </Box>
   );
@@ -728,24 +839,17 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
 
 function buildHints(
   selected: Selectable | undefined,
-  ideaBySlug: Map<string, IdeaSummary>
+  ideaBySlug: Map<string, IdeaSummary>,
+  hasProjects: boolean
 ): { key: string; label: string }[] {
   const base: { key: string; label: string }[] = [
     { key: "↑↓", label: "select" },
   ];
 
-  if (!selected) {
-    base.push({ key: "q", label: "quit" });
-    return base;
-  }
-
-  if (selected.zone === "flight") {
+  // Per-zone primary actions
+  if (selected?.zone === "flight") {
     base.push({ key: "enter", label: "watch" });
-    base.push({ key: "q", label: "quit" });
-    return base;
-  }
-
-  if (selected.zone === "await") {
+  } else if (selected?.zone === "await") {
     const idea = ideaBySlug.get(selected.slug);
     if (idea) {
       base.push({ key: "enter", label: "expand" });
@@ -759,16 +863,13 @@ function buildHints(
       }
       base.push({ key: "o", label: "open" });
     }
-    base.push({ key: "q", label: "quit" });
-    return base;
-  }
-
-  if (selected.zone === "today") {
+  } else if (selected?.zone === "today") {
     base.push({ key: "enter", label: "open idea" });
-    base.push({ key: "q", label: "quit" });
-    return base;
   }
 
+  // Universal navigation hints
+  base.push({ key: "tab", label: "next zone" });
+  if (hasProjects) base.push({ key: "p", label: "project" });
   base.push({ key: "q", label: "quit" });
   return base;
 }
