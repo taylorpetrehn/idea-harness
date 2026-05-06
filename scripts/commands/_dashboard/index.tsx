@@ -536,6 +536,22 @@ function todayGlyph(kind: TodayEntry["kind"]): { glyph: string; color: string } 
   }
 }
 
+function countMatches(
+  items: Selectable[],
+  ideaBySlug: Map<string, IdeaSummary>,
+  query: string
+): number {
+  const q = query.toLowerCase();
+  let n = 0;
+  for (const it of items) {
+    const slug = it.zone === "flight" ? it.runId : it.slug;
+    const idea = ideaBySlug.get(it.zone === "flight" ? "" : it.slug);
+    const hay = (idea?.title ?? slug).toLowerCase();
+    if (hay.includes(q)) n++;
+  }
+  return n;
+}
+
 function HelpOverlay({ cols }: { cols: number }) {
   const sections: { title: string; rows: { keys: string; label: string }[] }[] = [
     {
@@ -573,6 +589,7 @@ function HelpOverlay({ cols }: { cols: number }) {
       title: "global",
       rows: [
         { keys: "c",        label: "capture a new idea inline" },
+        { keys: "/",        label: "search titles (esc clears)" },
         { keys: ":",        label: "run a verb (brainstorm / ship / doctor / cleanup)" },
         { keys: "p",        label: "cycle project filter" },
         { keys: "?",        label: "this help (esc to close)" },
@@ -690,6 +707,12 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const [paletteOpen, setPaletteOpen] = React.useState<boolean>(false);
   const [paletteCursor, setPaletteCursor] = React.useState<number>(0);
   const [helpOpen, setHelpOpen] = React.useState<boolean>(false);
+  const [searching, setSearching] = React.useState<boolean>(false);
+  const [searchBuffer, setSearchBuffer] = React.useState<string>("");
+  /** Active filter applied across zones. Empty string = no filter.
+   *  Distinct from searchBuffer (the in-progress input) so Esc can
+   *  cancel typing without clearing a previously-applied filter. */
+  const [searchFilter, setSearchFilter] = React.useState<string>("");
   // Logical pointer to the currently-selected entity (slug for await/today,
   // runId for flight). Survives item list reshuffles after mutations so
   // pressing `a` on an awaiting idea doesn't yank the cursor off to a
@@ -750,27 +773,47 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     return m;
   }, [state.ideas]);
 
+  // Two filter axes — project chip + free-text search. Search matches
+  // titles case-insensitively; substring is the simplest predicate that
+  // does what users expect for short queries.
+  const q = searchFilter.toLowerCase();
+  const matchesSearch = (slug: string | null | undefined): boolean => {
+    if (!q) return true;
+    if (!slug) return false;
+    const idea = ideaBySlugRaw.get(slug);
+    if (!idea) return slug.toLowerCase().includes(q);
+    return idea.title.toLowerCase().includes(q) || idea.slug.toLowerCase().includes(q);
+  };
+
   const filteredRuns = React.useMemo(() => {
-    if (!projectFilter) return state.runs;
     return state.runs.filter((r) => {
-      if (!r.slug) return false;
-      const idea = ideaBySlugRaw.get(r.slug);
-      return idea?.project === projectFilter;
+      if (projectFilter) {
+        const idea = r.slug ? ideaBySlugRaw.get(r.slug) : undefined;
+        if (idea?.project !== projectFilter) return false;
+      }
+      return matchesSearch(r.slug);
     });
-  }, [state.runs, projectFilter, ideaBySlugRaw]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.runs, projectFilter, ideaBySlugRaw, q]);
 
   const filteredAwaiting = React.useMemo(() => {
-    const all = awaitingIdeas(state.ideas);
-    return projectFilter ? all.filter((i) => i.project === projectFilter) : all;
-  }, [state.ideas, projectFilter]);
+    let all = awaitingIdeas(state.ideas);
+    if (projectFilter) all = all.filter((i) => i.project === projectFilter);
+    if (q) all = all.filter((i) => matchesSearch(i.slug));
+    return all;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.ideas, projectFilter, q]);
 
   const filteredToday = React.useMemo(() => {
-    if (!projectFilter) return state.today;
     return state.today.filter((t) => {
-      const idea = ideaBySlugRaw.get(t.slug);
-      return idea?.project === projectFilter;
+      if (projectFilter) {
+        const idea = ideaBySlugRaw.get(t.slug);
+        if (idea?.project !== projectFilter) return false;
+      }
+      return matchesSearch(t.slug);
     });
-  }, [state.today, projectFilter, ideaBySlugRaw]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.today, projectFilter, ideaBySlugRaw, q]);
 
   // Build the unified selectable list against filtered slices.
   const items: Selectable[] = React.useMemo(() => {
@@ -817,7 +860,18 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     selectedRef.current = items[clamped] ?? null;
   }, [items, cursor]);
 
-  const next = React.useMemo(() => computeNext(state.ideas), [state.ideas]);
+  // NEXT respects active filters: when the user has narrowed via project
+  // or search, "the obvious next thing" should be obvious within their
+  // current focus, not pulled from outside it.
+  const next = React.useMemo(() => {
+    let pool = state.ideas;
+    if (projectFilter) pool = pool.filter((i) => i.project === projectFilter);
+    if (q) pool = pool.filter((i) =>
+      i.title.toLowerCase().includes(q) || i.slug.toLowerCase().includes(q)
+    );
+    return computeNext(pool);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.ideas, projectFilter, q]);
   const selected = items[cursor];
   const ideaBySlug = ideaBySlugRaw;
 
@@ -844,6 +898,32 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     if (helpOpen) {
       if (key.escape || input === "?" || input === "q") {
         setHelpOpen(false);
+      }
+      return;
+    }
+
+    // Search-input mode swallows everything except Enter (apply / clear)
+    // and Esc (cancel without applying).
+    if (searching) {
+      if (key.escape) {
+        setSearching(false);
+        setSearchBuffer(searchFilter); // restore to last applied
+        return;
+      }
+      if (key.return) {
+        const next = searchBuffer.trim();
+        setSearchFilter(next);
+        setSearching(false);
+        if (next) setMessage(`/${next} — ${countMatches(items, ideaBySlugRaw, next)} match`);
+        else setMessage(null);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setSearchBuffer((b) => b.slice(0, -1));
+        return;
+      }
+      if (input && !key.ctrl && !key.meta) {
+        setSearchBuffer((b) => b + input);
       }
       return;
     }
@@ -935,6 +1015,12 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     }
     if (input === "?") {
       setHelpOpen(true);
+      setMessage(null);
+      return;
+    }
+    if (input === "/") {
+      setSearching(true);
+      setSearchBuffer(searchFilter); // resume typing on existing filter
       setMessage(null);
       return;
     }
@@ -1099,11 +1185,13 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
       <Box paddingX={1} marginTop={0}>
         {(() => {
           const projectChip = projectFilter ? `  ·  project ${projectFilter}` : "";
+          const searchChip = searchFilter ? `  ·  /${searchFilter}` : "";
+          const chips = `${projectChip}${searchChip}`;
           // Three candidate forms ordered widest → tightest. Drop labels
           // before truncating with `…` so counts always survive.
-          const wide   = `— mission control · ${flightRuns.length} in flight · ${awaiting.length} awaiting you · ${today.length} today${projectChip}`;
-          const mid    = `· ${flightRuns.length} flight · ${awaiting.length} await · ${today.length} today${projectChip}`;
-          const tight  = `· ${flightRuns.length}/${awaiting.length}/${today.length}${projectChip}`;
+          const wide   = `— mission control · ${flightRuns.length} in flight · ${awaiting.length} awaiting you · ${today.length} today${chips}`;
+          const mid    = `· ${flightRuns.length} flight · ${awaiting.length} await · ${today.length} today${chips}`;
+          const tight  = `· ${flightRuns.length}/${awaiting.length}/${today.length}${chips}`;
           const budget = Math.max(8, cols - 10); // -10 = "harness " + paddingX
           const tail = wide.length <= budget ? wide
             : mid.length <= budget ? mid
@@ -1138,7 +1226,18 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
 
       {!helpOpen && (
         <Box marginTop={1} flexDirection="column">
-          {capturing ? (
+          {searching ? (
+            <Box paddingX={1}>
+              <Text color="magenta" bold>/ </Text>
+              <Text>{searchBuffer}</Text>
+              <Text color="gray">
+                {truncate(
+                  "_  (enter to apply · esc to cancel · empty enter clears)",
+                  Math.max(20, cols - 4 - searchBuffer.length)
+                )}
+              </Text>
+            </Box>
+          ) : capturing ? (
             <Box paddingX={1}>
               <Text color="cyan" bold>capture › </Text>
               <Text>{captureBuffer}</Text>
@@ -1293,6 +1392,7 @@ function buildHints(
 
   // Universal navigation hints
   base.push({ key: "c", label: "capture" });
+  base.push({ key: "/", label: "search" });
   base.push({ key: ":", label: "run verb" });
   base.push({ key: "?", label: "help" });
   base.push({ key: "tab", label: "next zone" });
