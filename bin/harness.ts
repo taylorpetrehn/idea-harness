@@ -229,6 +229,16 @@ program
     );
   });
 
+// ── digest (Phase 4) ────────────────────────────────────────────────
+program
+  .command("digest")
+  .description("Generate runs/digest-<date>.md from the journal for a UTC day")
+  .option("--date <yyyy-mm-dd>", "explicit date; defaults to today UTC")
+  .action(async (opts) => {
+    const { runDigest } = await import("../scripts/commands/digest");
+    await runVerb("digest", { date: opts.date }, runDigest, getFlags(program));
+  });
+
 // ── follow / watch-prs (Phase 3) ────────────────────────────────────
 program
   .command("follow")

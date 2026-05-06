@@ -301,6 +301,10 @@ called "App Ideas", then `harness brainstorm`.
 | `IDEA_HARNESS_AUTO_FLOW` | when `true`, the brainstormer auto-promotes high-confidence accept/reject verdicts past the human gate (see "Auto-flow" below) | `false` |
 | `IDEA_HARNESS_AUTO_SHARPEN` | when `true`, `needs-more-thought` brainstorms trigger the sharpener (see "Scope sharpener" below) | `false` |
 | `IDEA_HARNESS_AUTO_FOLLOW` | when `true`, `harness follow` / `watch-prs` actually spawn Claude and run `gh pr merge`; without it both verbs run as dry probes (see "PR follow-through" below) | `false` |
+| `IDEA_HARNESS_SLACK_CHANNEL` / `IDEA_HARNESS_SLACK_CAPTURE_EMOJI` / `IDEA_HARNESS_SLACK_LOOKBACK_HOURS` | Slack capture source — channel id, trigger emoji, lookback window | required / `star` / `24` |
+| `SLACK_BOT_TOKEN` | bearer token for the Slack capture source | — |
+| `IDEA_HARNESS_EMAIL_ENDPOINT` / `IDEA_HARNESS_EMAIL_TOKEN` | JSON-over-HTTPS inbox endpoint + optional bearer for the email capture source | — |
+| `IDEA_HARNESS_SYNTHESIS_THRESHOLD` | similarity threshold (0-1) for cross-idea synthesis duplicate detection | `0.7` |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info`, `debug` | `info` |
 
 ## Auto-flow
@@ -404,6 +408,51 @@ state-machine paths without touching the network.
 
 Webhook receivers were called out as a follow-on in the original
 roadmap; this poll-based daemon is the first cut.
+
+## Compounding extras (Phase 4)
+
+Three smaller items that don't enable each other but each give real
+lift once the core auto-flow / sharpener / PR-followthrough loop is
+running.
+
+### Daily digest
+
+```
+harness digest [--date YYYY-MM-DD]
+```
+
+Reads the journal and writes `runs/digest-<date>.md` summarizing
+what got captured / brainstormed / accepted / rejected /
+auto-flowed / sharpened / shipped on that UTC day. Idempotent —
+re-running overwrites the file. Wire to cron for scheduled
+delivery.
+
+### Multi-source capture: Slack + email
+
+Two new sources behind the existing `lib/sources/` registry:
+
+- **Slack** — `harness capture --from slack` polls a channel for
+  messages tagged with a reaction emoji (default ⭐), turns each
+  into a raw idea, and reacts back with `:eyes:` to dedupe across
+  polls. Needs `SLACK_BOT_TOKEN` and `IDEA_HARNESS_SLACK_CHANNEL`.
+- **Email** — `harness capture --from email` polls a JSON-over-HTTPS
+  inbox endpoint (the small adapter you'd put in front of IMAP
+  yourself, or a Cloudflare Email Worker / SES Lambda). DELETEs the
+  message ID after consumption.
+
+Both sources use only built-in `fetch` — no new SDK deps. Tests
+inject custom fetchers via `setSlackFetch` / `setEmailFetch`.
+
+### Cross-idea synthesis
+
+`scripts/lib/synthesis.ts` exposes `findSimilar(title, body, ideas,
+opts?, excludeSlug?)`. Cheap-and-local Jaccard over normalized
+word-bigrams (no LLM call, no embedding model) flags candidates
+with similarity ≥ `IDEA_HARNESS_SYNTHESIS_THRESHOLD` (default 0.7)
+so the brainstormer can prefer "this overlaps with `<slug>` —
+bundle / supersede" over a blank-slate brainstorm. The function is
+deliberately library-only; callers (the dashboard NEXT bar, the
+brainstormer Tier 1 prompt) opt in.
 
 ## Why This Shape
 

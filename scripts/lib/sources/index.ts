@@ -12,6 +12,7 @@ import { StdinSource } from "./stdin";
 import { TextSource } from "./text";
 import { IssueSource } from "./issue";
 import { SlackSource } from "./slack";
+import { EmailSource } from "./email";
 
 const REGISTRY: Source[] = [
   RemindersSource,
@@ -19,6 +20,7 @@ const REGISTRY: Source[] = [
   TextSource,
   IssueSource,
   SlackSource,
+  EmailSource,
 ];
 
 export function listSources(): Source[] {
