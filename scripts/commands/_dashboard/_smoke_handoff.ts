@@ -82,7 +82,7 @@ async function main() {
     return {
       ideas,
       runs: dataMod.scanActiveRuns(RUNS_DIR),
-      today: dataMod.buildTodayFeed(ideas, journal, { limit: 30 }),
+      today: dataMod.buildTodayLifecycle(ideas, journal, { limit: 12 }),
     };
   };
 

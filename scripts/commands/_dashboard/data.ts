@@ -362,6 +362,99 @@ export function buildTodayFeed(
   return deduped;
 }
 
+// ── lifecycle collapse: one row per idea, with the full trail ──────
+
+export interface LifecycleEntry {
+  slug: string;
+  title?: string;
+  /** Latest activity timestamp — used for sort + display. */
+  latestTs: string;
+  /** Earliest activity timestamp — for "X minutes/hours of progress" math. */
+  earliestTs: string;
+  /** Chronological list of kinds the slug went through, oldest first.
+   *  Each kind appears at most once (we collapse repeats). */
+  trail: TodayEntry["kind"][];
+  /** Most recent kind in the trail — drives the row's primary color. */
+  latestKind: TodayEntry["kind"];
+  /** PR URL if the lifecycle reached pr-open / shipped. */
+  prUrl?: string;
+}
+
+/**
+ * Collapse the per-event TODAY feed into one row per slug. Lifecycle
+ * progression is captured as the `trail` array; the renderer turns
+ * those kinds into a compact glyph string. Sorted newest first by
+ * latest activity.
+ */
+export function buildTodayLifecycle(
+  ideas: IdeaSummary[],
+  journal: JournalEntry[],
+  opts: { windowMs?: number; limit?: number } = {}
+): LifecycleEntry[] {
+  // Reuse the existing feed builder to dedupe and apply the time window.
+  const flat = buildTodayFeed(ideas, journal, { windowMs: opts.windowMs });
+  const bySlug = new Map<string, LifecycleEntry>();
+
+  // We want trail order = chronological (oldest first), so iterate the
+  // flat feed in reverse since it's sorted newest-first.
+  for (let i = flat.length - 1; i >= 0; i--) {
+    const e = flat[i];
+    let entry = bySlug.get(e.slug);
+    if (!entry) {
+      entry = {
+        slug: e.slug,
+        title: e.title,
+        latestTs: e.ts,
+        earliestTs: e.ts,
+        trail: [],
+        latestKind: e.kind,
+      };
+      bySlug.set(e.slug, entry);
+    }
+    if (e.ts < entry.earliestTs) entry.earliestTs = e.ts;
+    if (e.ts > entry.latestTs) {
+      entry.latestTs = e.ts;
+      entry.latestKind = e.kind;
+    }
+    if (!entry.trail.includes(e.kind)) entry.trail.push(e.kind);
+    if (e.kind === "pr-open" && e.detail?.startsWith("http") && !entry.prUrl) {
+      entry.prUrl = e.detail;
+    }
+    if (!entry.title && e.title) entry.title = e.title;
+  }
+
+  // Stage-rank sort the trail. Same-timestamp events (e.g. captured_at
+  // == brainstormed_at when a brainstorm runs immediately after capture)
+  // get ordered by the lifecycle's known progression rather than by
+  // insertion order, which is unstable across runs.
+  for (const entry of bySlug.values()) {
+    entry.trail.sort((a, b) => stageRank(a) - stageRank(b));
+  }
+
+  const out = Array.from(bySlug.values()).sort((a, b) =>
+    b.latestTs.localeCompare(a.latestTs)
+  );
+
+  if (opts.limit) return out.slice(0, opts.limit);
+  return out;
+}
+
+const STAGE_RANK: Record<TodayEntry["kind"], number> = {
+  captured: 0,
+  brainstormed: 1,
+  "needs-thought": 2,
+  rejected: 2,
+  accepted: 3,
+  "build-start": 4,
+  "pr-open": 5,
+  shipped: 6,
+  other: 7,
+};
+
+function stageRank(kind: TodayEntry["kind"]): number {
+  return STAGE_RANK[kind] ?? 99;
+}
+
 function mapJournalEntry(
   e: JournalEntry,
   slug: string,

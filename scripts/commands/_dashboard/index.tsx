@@ -26,6 +26,7 @@ import {
   ActiveRun,
   ParsedEvent,
   TodayEntry,
+  LifecycleEntry,
   computeNext,
   awaitingIdeas,
   parseBrainstormSections,
@@ -62,12 +63,12 @@ export interface DashboardCallbacks {
 type Selectable =
   | { zone: "flight"; runId: string }
   | { zone: "await"; slug: string }
-  | { zone: "today"; ts: string };
+  | { zone: "today"; slug: string };
 
 export interface DashboardState {
   ideas: IdeaSummary[];
   runs: ActiveRun[];
-  today: TodayEntry[];
+  today: LifecycleEntry[];
   /** Tail-driven slice: latest event(s) per run id. */
   liveByRun: Map<string, { events: ParsedEvent[]; eventCount: number }>;
 }
@@ -76,7 +77,7 @@ export interface DashboardState {
 export interface DashboardSnapshot {
   ideas: IdeaSummary[];
   runs: ActiveRun[];
-  today: TodayEntry[];
+  today: LifecycleEntry[];
 }
 
 // ── status & event styling ──────────────────────────────────────────
@@ -451,31 +452,35 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
 }
 
 function TodayRow({ entry, selected, narrow, cols }: {
-  entry: TodayEntry;
+  entry: LifecycleEntry;
   selected: boolean;
   narrow: boolean;
   cols: number;
 }) {
-  const { glyph, color } = todayGlyph(entry.kind);
   const title = entry.title ?? entry.slug;
-  // For pr-open: show "PR #N" instead of the full URL; the slug already
-  // identifies the idea. Keeps each row to one line at any width.
-  const prNum = entry.detail?.match(/\/pull\/(\d+)/)?.[1];
-  const isPr = entry.kind === "pr-open" && entry.detail?.startsWith("http");
-  const prSuffix = isPr ? (prNum ? `PR #${prNum}` : "PR open") : "";
-  const titleBudget = Math.max(
-    20,
-    cols - 4 /* gutter+glyph */ - 6 /* time */ - 2 /* glyph */ - prSuffix.length - 2
-  );
+  const prNum = entry.prUrl?.match(/\/pull\/(\d+)/)?.[1];
+  const prSuffix = entry.prUrl ? (prNum ? `PR #${prNum}` : "PR open") : "";
+
+  // Trail glyphs in chronological order (oldest first). The latest stage
+  // drives the trail's color so the eye lands on "where this idea is now"
+  // without losing the progression.
+  const trail = entry.trail.map((k) => todayGlyph(k).glyph).join("");
+  const trailColor = todayGlyph(entry.latestKind).color;
+
+  // 4 gutter + 6 time + 2 sp + trail + 1 sp + prSuffix = overhead.
+  const overhead = 4 + 6 + 2 + trail.length + 1 + (prSuffix ? prSuffix.length + 1 : 0);
+  const titleBudget = Math.max(20, cols - overhead);
+
   return (
     <Box paddingLeft={2}>
       <Text color={selected ? "cyan" : "gray"}>{selected ? "▸ " : "  "}</Text>
-      <Text color="gray">{timeOfDay(entry.ts)} </Text>
-      <Text color={color}>{glyph} </Text>
-      <Text bold={selected}>{truncate(title, narrow ? titleBudget : titleBudget)}</Text>
+      <Text color="gray">{timeOfDay(entry.latestTs)} </Text>
+      <Text bold={selected}>{truncate(title, titleBudget)}</Text>
+      <Text color="gray">  </Text>
+      <Text color={trailColor}>{trail}</Text>
       {prSuffix ? (
         <>
-          <Text color="gray">  </Text>
+          <Text color="gray"> </Text>
           <Text color="green">{prSuffix}</Text>
         </>
       ) : null}
@@ -659,7 +664,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     const out: Selectable[] = [];
     for (const r of filteredRuns) out.push({ zone: "flight", runId: r.runId });
     for (const i of filteredAwaiting) out.push({ zone: "await", slug: i.slug });
-    for (const t of filteredToday) out.push({ zone: "today", ts: t.ts + ":" + t.slug });
+    for (const t of filteredToday) out.push({ zone: "today", slug: t.slug });
     return out;
   }, [filteredRuns, filteredAwaiting, filteredToday]);
 
@@ -860,13 +865,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
 
     if (selected.zone === "today") {
       if (key.return) {
-        const slug = selected.ts.split(":").slice(2).join(":") || selected.ts;
-        // We packed `ts:slug` for uniqueness; recover the slug.
-        const real = state.today.find(
-          (t) => t.ts + ":" + t.slug === selected.ts
-        );
-        if (!real) return;
-        const idea = ideaBySlug.get(real.slug);
+        const idea = ideaBySlug.get(selected.slug);
         if (idea) {
           onAction({ kind: "open", idea });
           exit();
@@ -956,9 +955,8 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
         </Box>
       ) : (
         today.slice(0, narrow ? 5 : 10).map((t) => {
-          const tsKey = t.ts + ":" + t.slug;
-          const sel = selected?.zone === "today" && selected.ts === tsKey;
-          return <TodayRow key={tsKey} entry={t} selected={sel} narrow={narrow} cols={cols} />;
+          const sel = selected?.zone === "today" && selected.slug === t.slug;
+          return <TodayRow key={t.slug} entry={t} selected={sel} narrow={narrow} cols={cols} />;
         })
       )}
 

@@ -62,7 +62,7 @@ export async function run(_args: DashboardArgs, out: Output): Promise<void> {
   const dashboardMod = await import("./_dashboard");
   const dataMod = await import("./_dashboard/data");
   const { renderDashboard } = dashboardMod;
-  const { scanActiveRuns, buildTodayFeed } = dataMod;
+  const { scanActiveRuns, buildTodayLifecycle } = dataMod;
   const { renderWatchTui } = await import("./_watch_tui");
 
   const ideasDir = path.join(ROOT, "ideas");
@@ -74,7 +74,7 @@ export async function run(_args: DashboardArgs, out: Output): Promise<void> {
     return {
       ideas,
       runs: scanActiveRuns(RUNS_DIR),
-      today: buildTodayFeed(ideas, journal, { limit: 30 }),
+      today: buildTodayLifecycle(ideas, journal, { limit: 12 }),
     };
   };
 

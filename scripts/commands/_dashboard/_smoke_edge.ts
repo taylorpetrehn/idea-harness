@@ -66,7 +66,7 @@ async function main() {
     const snapshot = () => ({
       ideas: opts.ideas ?? [],
       runs: dataMod.scanActiveRuns(opts.runsDir ?? RUNS_DIR),
-      today: dataMod.buildTodayFeed(opts.ideas ?? [], opts.journal ?? [], { limit: 30 }),
+      today: dataMod.buildTodayLifecycle(opts.ideas ?? [], opts.journal ?? [], { limit: 12 }),
     });
 
     let threw: Error | null = null;
