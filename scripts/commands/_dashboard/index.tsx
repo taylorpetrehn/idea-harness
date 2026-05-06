@@ -506,6 +506,76 @@ function todayGlyph(kind: TodayEntry["kind"]): { glyph: string; color: string } 
   }
 }
 
+function HelpOverlay({ cols }: { cols: number }) {
+  const sections: { title: string; rows: { keys: string; label: string }[] }[] = [
+    {
+      title: "navigate",
+      rows: [
+        { keys: "↑↓ j k",   label: "select row" },
+        { keys: "tab",      label: "jump to next zone" },
+        { keys: "g G",      label: "first / last row" },
+      ],
+    },
+    {
+      title: "in flight",
+      rows: [
+        { keys: "enter",    label: "zoom into watch TUI fullscreen" },
+      ],
+    },
+    {
+      title: "awaiting you",
+      rows: [
+        { keys: "enter",    label: "expand brainstorm detail inline" },
+        { keys: "a",        label: "accept (status → accepted)" },
+        { keys: "t",        label: "needs more thought" },
+        { keys: "r",        label: "reject" },
+        { keys: "b",        label: "build (after accept)" },
+        { keys: "o",        label: "open idea file in $EDITOR" },
+      ],
+    },
+    {
+      title: "today",
+      rows: [
+        { keys: "enter",    label: "open idea file" },
+      ],
+    },
+    {
+      title: "global",
+      rows: [
+        { keys: "c",        label: "capture a new idea inline" },
+        { keys: ":",        label: "run a verb (brainstorm / ship / doctor / cleanup)" },
+        { keys: "p",        label: "cycle project filter" },
+        { keys: "?",        label: "this help (esc to close)" },
+        { keys: "q ctrl+c", label: "quit" },
+      ],
+    },
+  ];
+
+  const labelWidth = Math.max(20, Math.min(60, cols - 22));
+
+  return (
+    <Box flexDirection="column" paddingX={2} paddingY={1}>
+      <Box>
+        <Text color="cyan" bold>harness keymap </Text>
+        <Text color="gray">— press ? or esc to close</Text>
+      </Box>
+      {sections.map((s) => (
+        <Box key={s.title} flexDirection="column" marginTop={1}>
+          <Text color="yellow" bold>{s.title}</Text>
+          {s.rows.map((r, i) => (
+            <Box key={i} paddingLeft={2}>
+              <Box width={18}>
+                <Text color="cyan">{r.keys}</Text>
+              </Box>
+              <Text>{truncate(r.label, labelWidth)}</Text>
+            </Box>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
 function FooterBar({
   hints,
   message,
@@ -589,6 +659,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
   const [captureBuffer, setCaptureBuffer] = React.useState<string>("");
   const [paletteOpen, setPaletteOpen] = React.useState<boolean>(false);
   const [paletteCursor, setPaletteCursor] = React.useState<number>(0);
+  const [helpOpen, setHelpOpen] = React.useState<boolean>(false);
 
   const fleetRef = React.useRef<WatcherFleet | null>(null);
   if (!fleetRef.current) fleetRef.current = new WatcherFleet();
@@ -710,6 +781,15 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
 
   // Keyboard
   useInput((input, key) => {
+    // Help overlay: only Esc or `?` closes. Block all other keybinds so
+    // the user can read without accidentally triggering anything.
+    if (helpOpen) {
+      if (key.escape || input === "?" || input === "q") {
+        setHelpOpen(false);
+      }
+      return;
+    }
+
     // Palette mode: arrow nav + Enter to spawn + Esc to close.
     if (paletteOpen) {
       if (key.escape) { setPaletteOpen(false); setMessage(null); return; }
@@ -792,6 +872,11 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     if (input === ":") {
       setPaletteOpen(true);
       setPaletteCursor(0);
+      setMessage(null);
+      return;
+    }
+    if (input === "?") {
+      setHelpOpen(true);
       setMessage(null);
       return;
     }
@@ -936,10 +1021,17 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
     <Box flexDirection="column">
       <Box paddingX={1} marginTop={0}>
         {(() => {
-          const stats = `${flightRuns.length} in flight · ${awaiting.length} awaiting you · ${today.length} today`;
           const projectChip = projectFilter ? `  ·  project ${projectFilter}` : "";
-          // Pre-compose so Ink doesn't split each fragment to a new line.
-          const tail = truncate(`— mission control · ${stats}${projectChip}`, Math.max(20, cols - 10));
+          // Three candidate forms ordered widest → tightest. Drop labels
+          // before truncating with `…` so counts always survive.
+          const wide   = `— mission control · ${flightRuns.length} in flight · ${awaiting.length} awaiting you · ${today.length} today${projectChip}`;
+          const mid    = `· ${flightRuns.length} flight · ${awaiting.length} await · ${today.length} today${projectChip}`;
+          const tight  = `· ${flightRuns.length}/${awaiting.length}/${today.length}${projectChip}`;
+          const budget = Math.max(8, cols - 10); // -10 = "harness " + paddingX
+          const tail = wide.length <= budget ? wide
+            : mid.length <= budget ? mid
+            : tight.length <= budget ? tight
+            : truncate(tight, budget);
           return (
             <>
               <Text bold color="cyan">harness </Text>
@@ -949,6 +1041,81 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
         })()}
       </Box>
 
+      {helpOpen ? (
+        <HelpOverlay cols={cols} />
+      ) : (
+        <DashboardZones
+          next={next}
+          narrow={narrow}
+          cols={cols}
+          flightRuns={flightRuns}
+          awaiting={awaiting}
+          today={today}
+          ideaBySlug={ideaBySlug}
+          state={state}
+          selected={selected}
+          expandedAwait={expandedAwait}
+          ideasDir={ideasDir}
+        />
+      )}
+
+      {!helpOpen && (
+        <Box marginTop={1} flexDirection="column">
+          {capturing ? (
+            <Box paddingX={1}>
+              <Text color="cyan" bold>capture › </Text>
+              <Text>{captureBuffer}</Text>
+              <Text color="gray">
+                {truncate(
+                  "_  (enter to save · esc to cancel)",
+                  Math.max(20, cols - 12 - captureBuffer.length)
+                )}
+              </Text>
+            </Box>
+          ) : paletteOpen ? (
+            <Box paddingX={1} flexDirection="column">
+              <Text color="magenta" bold>: run a verb</Text>
+              {paletteOptions.map((opt, i) => {
+                const sel = i === paletteCursor;
+                return (
+                  <Box key={opt.verb}>
+                    <Text color={sel ? "cyan" : "gray"}>{sel ? "▸ " : "  "}</Text>
+                    <Text bold={sel} color={sel ? "white" : undefined}>
+                      {opt.label.padEnd(12)}
+                    </Text>
+                    <Text color="gray">  {opt.hint}</Text>
+                  </Box>
+                );
+              })}
+              <Text color="gray" dimColor>↑↓ navigate · enter run · esc cancel</Text>
+            </Box>
+          ) : (
+            <FooterBar hints={hints} message={message} narrow={narrow} cols={cols} />
+          )}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+interface DashboardZonesProps {
+  next: ReturnType<typeof computeNext>;
+  narrow: boolean;
+  cols: number;
+  flightRuns: ActiveRun[];
+  awaiting: IdeaSummary[];
+  today: LifecycleEntry[];
+  ideaBySlug: Map<string, IdeaSummary>;
+  state: DashboardState;
+  selected: Selectable | undefined;
+  expandedAwait: Set<string>;
+  ideasDir: string;
+}
+
+function DashboardZones(p: DashboardZonesProps) {
+  const { next, narrow, cols, flightRuns, awaiting, today, ideaBySlug, state, selected, expandedAwait, ideasDir } = p;
+  return (
+    <>
       <NextBar next={next} narrow={narrow} cols={cols} />
 
       <ZoneHeader glyph="◆" label="IN FLIGHT" count={flightRuns.length} color="cyan" />
@@ -1011,41 +1178,7 @@ export function Dashboard({ initial, refresh, ideasDir, callbacks, onAction }: D
           return <TodayRow key={t.slug} entry={t} selected={sel} narrow={narrow} cols={cols} />;
         })
       )}
-
-      <Box marginTop={1} flexDirection="column">
-        {capturing ? (
-          <Box paddingX={1}>
-            <Text color="cyan" bold>capture › </Text>
-            <Text>{captureBuffer}</Text>
-            <Text color="gray">
-              {truncate(
-                "_  (enter to save · esc to cancel)",
-                Math.max(20, cols - 12 - captureBuffer.length)
-              )}
-            </Text>
-          </Box>
-        ) : paletteOpen ? (
-          <Box paddingX={1} flexDirection="column">
-            <Text color="magenta" bold>: run a verb</Text>
-            {paletteOptions.map((opt, i) => {
-              const sel = i === paletteCursor;
-              return (
-                <Box key={opt.verb}>
-                  <Text color={sel ? "cyan" : "gray"}>{sel ? "▸ " : "  "}</Text>
-                  <Text bold={sel} color={sel ? "white" : undefined}>
-                    {opt.label.padEnd(12)}
-                  </Text>
-                  <Text color="gray">  {opt.hint}</Text>
-                </Box>
-              );
-            })}
-            <Text color="gray" dimColor>↑↓ navigate · enter run · esc cancel</Text>
-          </Box>
-        ) : (
-          <FooterBar hints={hints} message={message} narrow={narrow} cols={cols} />
-        )}
-      </Box>
-    </Box>
+    </>
   );
 }
 
@@ -1084,6 +1217,7 @@ function buildHints(
   // Universal navigation hints
   base.push({ key: "c", label: "capture" });
   base.push({ key: ":", label: "run verb" });
+  base.push({ key: "?", label: "help" });
   base.push({ key: "tab", label: "next zone" });
   if (hasProjects) base.push({ key: "p", label: "project" });
   base.push({ key: "q", label: "quit" });
