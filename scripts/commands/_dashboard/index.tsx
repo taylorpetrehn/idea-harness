@@ -393,6 +393,12 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
             <Text>  {truncate(sections.problem, cap - 2)}</Text>
           </>
         ) : null}
+        {sections.why ? (
+          <>
+            <Text color="gray" dimColor>why</Text>
+            <Text color="cyan">  {truncate(sections.why, cap - 2)}</Text>
+          </>
+        ) : null}
         {sections.variants.length > 0 ? (
           <Text color="gray" dimColor>variants</Text>
         ) : null}
@@ -440,6 +446,12 @@ function AwaitDetail({ idea, narrow, cols, ideasDir }: {
         <Text>
           <Text color="gray" dimColor>{pad("problem")}</Text>
           {truncate(sections.problem, cap)}
+        </Text>
+      ) : null}
+      {sections.why ? (
+        <Text>
+          <Text color="gray" dimColor>{pad("why")}</Text>
+          <Text color="cyan">{truncate(sections.why, cap)}</Text>
         </Text>
       ) : null}
       {sections.variants.slice(0, 3).map((v, i) => {

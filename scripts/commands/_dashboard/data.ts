@@ -205,6 +205,10 @@ function inferVerb(ev: ParsedEvent | null): string | null {
 
 export interface BrainstormSections {
   problem: string | null;
+  /** The verdict's one-sentence rationale (`**Why:** …`). Highest-signal
+   *  field for a reviewer — explains why the recommendation is what it is
+   *  in domain terms, not generic feature speak. */
+  why: string | null;
   variants: { label: string; body: string }[];
   topRisks: string[];
   ifAcceptedBuild: string | null;
@@ -215,7 +219,7 @@ export function parseBrainstormSections(filepath: string): BrainstormSections {
   try {
     content = fs.readFileSync(filepath, "utf8");
   } catch {
-    return { problem: null, variants: [], topRisks: [], ifAcceptedBuild: null };
+    return { problem: null, why: null, variants: [], topRisks: [], ifAcceptedBuild: null };
   }
 
   const problem = extractSection(content, "Problem");
@@ -223,9 +227,11 @@ export function parseBrainstormSections(filepath: string): BrainstormSections {
   const risksBlock =
     extractSection(content, "Risks and open questions") ?? extractSection(content, "Risks");
   const ifAcceptedBuild = matchBoldLabel(content, "If accepted, build");
+  const why = matchBoldLabel(content, "Why");
 
   return {
     problem: problem ? firstParagraph(problem) : null,
+    why: why ? stripMarkdown(why) : null,
     variants: variantsBlock ? parseVariants(variantsBlock) : [],
     topRisks: risksBlock ? parseBullets(risksBlock).slice(0, 3) : [],
     ifAcceptedBuild,
