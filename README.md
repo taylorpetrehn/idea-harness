@@ -27,36 +27,105 @@ npm link             # makes `harness` available on PATH
 # 3. Verify your environment
 harness doctor
 
-# 4. Run a full harness pass: harvest → brainstorm → schema + critic
-harness brainstorm
+# 4. Open the dashboard — your home base.
+harness                       # mission control (no args)
+```
 
-# 5. Review ideas conversationally in Claude (mobile or desktop)
-#    Just ask: "What ideas are waiting for me?"
-#    Or hit the CLI directly:
-harness ideas waiting
+`harness` (no args) drops you into the interactive dashboard. From
+there one keystroke captures a new idea (`c`), spawns a brainstorm /
+ship run (`:`), or zooms into a live build (`enter` on an in-flight
+row). See [Dashboard](#dashboard) below for the full keymap. The
+underlying verbs are still available for scripts and agents:
 
-# 6. Ship the next eligible idea — no slug needed.
-#    Picks the newest accepted (or auto-accepts a brainstormed one),
-#    or resumes a `building` idea whose previous session didn't reach PR.
-harness ship
-
-# Equivalent step-by-step if you want explicit control:
-harness review accept <slug>     # mark accepted
-harness build <slug>             # spawn Claude in target repo, open PR
+```bash
+# Equivalent CLI verbs (the dashboard runs these for you):
+harness brainstorm                # harvest → brainstorm → critic
+harness ship                      # do the next obvious thing
+harness ideas waiting             # list ideas needing review
+harness review accept <slug>      # mark accepted
+harness build <slug>              # spawn Claude in target repo, open PR
 harness resume <slug>             # recover a stuck `building` idea
+harness build watch <slug>        # tail a live build session
+harness review in-flight          # accepted / building / pr-open
+harness inspect                   # rolling metrics + last-run summary
+harness cleanup                   # remove worktrees for shipped ideas (dry)
+harness cleanup --apply           # actually remove
 
 # Slugs accept a unique prefix or substring, so `harness resume dm-cohorts`
 # resolves to the long capture as long as it's unambiguous.
-
-# 7. Track in-flight work
-harness review in-flight     # accepted / building / pr-open
-harness inspect              # rolling metrics + last-run summary
-harness build watch <slug>   # tail a live build session
-
-# 8. Cleanup worktrees for shipped ideas (dry-run by default)
-harness cleanup              # shows what would be removed
-harness cleanup --apply      # actually remove
 ```
+
+## Dashboard
+
+`harness` (no args) is mission control for the agentic idea-to-PR
+engine. Four zones, one cursor, every state visible at a glance:
+
+```
+┌─ harness · 0 in flight · 1 awaiting you · 2 today ───────────────┐
+│ NEXT  ▲ event-ledger needs your call (medium · 90s)  [enter]     │
+└──────────────────────────────────────────────────────────────────┘
+  ◆ IN FLIGHT · 1
+    ⠼ build · job-slug → job.title   letsbarker · 4m12s · 87 ev
+      └ build.stdout 12 passed · opening PR
+  ▲ AWAITING YOU · 1
+  ▸ ▲ event-ledger                     letsbarker · medium · 2m ago
+      problem  Operational knowledge locked in transient surfaces…
+      variants 1. Event ledger only — append-only domain_events…
+               2. Event ledger + MCP — same table plus MCP server…
+               3. Full observability platform — pgvector + Stream…
+      risks    ▲ "tracks/learns from all app behavior" too broad
+               ▲ chat ingestion has Stream plan + privacy story
+      build    simplest version (event ledger only)
+  ✓ TODAY · 2
+    11:24  Job slug → job.title              ↓💭✓◆★ PR #1290
+    09:15  event-ledger                       ↓💭
+```
+
+**Zones**
+
+- **NEXT** — single line, the obvious-next action computed via the
+  same logic `harness ship` uses (newest accepted → newest building →
+  newest brainstormed).
+- **IN FLIGHT** — every active run (no `summary.json` yet). Each
+  row tails its own `runs/<id>/events.ndjson` live; the trailing
+  line shows the most recent event. Runs idle > 5 min are flagged
+  `(stalled)` with a paused glyph.
+- **AWAITING YOU** — brainstormed ideas needing a verdict. Selected
+  row expands inline with the verdict, top variants, top risks, and
+  the recommended build target — no `$EDITOR` trip needed.
+- **TODAY** — rolling 24h activity collapsed by slug into a
+  lifecycle trail (↓ captured · 💭 brainstormed · ✓ accepted · ◆
+  build started · ★ PR open).
+
+**Keymap**
+
+| keys | action |
+|---|---|
+| `↑↓` `j` `k` | select row |
+| `tab`        | jump to next zone |
+| `g` `G`      | first / last row |
+| `enter`      | (flight) zoom into watch TUI · (await) expand · (today) open idea |
+| `a` `t` `r`  | accept / needs-more-thought / reject (await zone) |
+| `b`          | build the selected accepted idea |
+| `o`          | open idea file in `$EDITOR` |
+| `c`          | inline capture — type a title, Enter to save |
+| `:`          | run a verb (brainstorm / ship / doctor / cleanup) |
+| `p`          | cycle project filter |
+| `?`          | full keymap overlay |
+| `q` `ctrl+c` | quit |
+
+**Live behavior**
+
+The dashboard refreshes from disk every second and tails active
+events.ndjson files concurrently — capturing an idea, accepting one,
+or spawning a verb shows up in the next tick without a manual
+refresh. Mutations preserve the cursor position by logical id (slug
+or runId), so pressing `a` doesn't yank your selection onto a
+neighbor.
+
+The dashboard is TTY-only. `harness --json` and `harness --ndjson`
+return a clean BAD_INPUT envelope pointing agents at `harness ideas
+list` instead.
 
 ### Agent-friendly output
 
