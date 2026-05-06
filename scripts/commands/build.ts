@@ -186,6 +186,7 @@ export async function runStatus(args: BuildStatusArgs, out: Output): Promise<voi
 
 export interface BuildWatchArgs {
   slug: string;
+  demo?: boolean;
 }
 
 const BuildWatchData = z.object({
@@ -207,6 +208,27 @@ export async function runWatch(args: BuildWatchArgs, out: Output): Promise<void>
     out.error("NOT_FOUND", `No idea matches "${args.slug}".`);
     return;
   }
+
+  // Demo mode: render the TUI with a synthetic event stream so the UX
+  // can be exercised without a live build.
+  if (args.demo) {
+    if (out.mode !== "pretty" || !process.stdout.isTTY) {
+      out.error("BAD_INPUT", "--demo only works in pretty TTY mode.", {
+        hint: "Run from an interactive terminal without --json/--ndjson.",
+      });
+      return;
+    }
+    const { renderWatchTui, demoEventStream } = await import("./_watch_tui");
+    await renderWatchTui({
+      idea,
+      eventsPath: path.join(RUNS_DIR, "demo", "events.ndjson"),
+      exitOnTerminal: true,
+      demoFeed: demoEventStream(),
+    });
+    out.result({ slug: idea.slug, log_path: "(demo)", followed: true }, "Demo complete.");
+    return;
+  }
+
   const { logPath, eventsPath } = findLatestBuildArtifact(idea.slug);
   // Prefer events.ndjson when present — it's structured and replays cleanly
   // in --ndjson mode. Fall back to the raw log for older runs.
@@ -218,13 +240,18 @@ export async function runWatch(args: BuildWatchArgs, out: Output): Promise<void>
     return;
   }
 
+  // Pretty + TTY + structured event stream → render the Ink TUI.
+  if (out.mode === "pretty" && process.stdout.isTTY && eventsPath) {
+    const { renderWatchTui } = await import("./_watch_tui");
+    await renderWatchTui({ idea, eventsPath, exitOnTerminal: true });
+    out.result({ slug: idea.slug, log_path: eventsPath, followed: true });
+    return;
+  }
+
   if (out.mode === "pretty" || out.mode === "ndjson") {
-    // Pretty mode: tail and render. ndjson mode: forward each line through
-    // out.event() so the consumer gets a clean event stream.
+    // Non-TTY pretty or ndjson: stream raw lines (existing behavior).
     await tailFile(followPath, (line) => {
       if (out.mode === "ndjson" && eventsPath) {
-        // Each line is already a JSON-encoded HarnessEvent — write it
-        // verbatim to stdout to avoid double-encoding.
         process.stdout.write(line);
       } else {
         out.stdout(line);

@@ -122,6 +122,32 @@ export async function callCriticModel(opts: { prompt: string }): Promise<CriticR
   return { output: text, tokensUsed };
 }
 
+export interface SharpenerResponse {
+  output: string;
+  tokensUsed: number;
+}
+
+/**
+ * Phase 2 (scope sharpener). One-shot, single-sentence output. Uses
+ * the critic transport since the prompt is small and cheap; offline
+ * mode returns a deterministic generic question so smokes can pin
+ * the contract without invoking the live model.
+ */
+export async function callSharpenerModel(opts: { prompt: string }): Promise<SharpenerResponse> {
+  const mode = resolveMode();
+  if (mode === "offline") {
+    return {
+      output: "What is the smallest concrete thing you would build first to test this?",
+      tokensUsed: 0,
+    };
+  }
+  const { text, tokensUsed } =
+    mode === "sdk"
+      ? await callSdk(MODELS.critic, MAX_TOKENS.critic, opts.prompt)
+      : await callCli(MODELS.critic, opts.prompt);
+  return { output: text.trim(), tokensUsed };
+}
+
 // ── SDK transport (lazy import so the dep is optional) ────────────────
 
 async function callSdk(

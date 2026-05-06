@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
+    "module": "esnext",
     "lib": ["ES2022"],
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
@@ -17,8 +17,9 @@
     "resolveJsonModule": true,
     "outDir": "dist",
     "sourceMap": true,
-    "declaration": false
+    "declaration": false,
+    "jsx": "react"
   },
-  "include": ["scripts/**/*.ts", "bin/**/*.ts"],
+  "include": ["scripts/**/*.ts", "scripts/**/*.tsx", "bin/**/*.ts"],
   "exclude": ["node_modules", "dist", "ideas", "runs", "state"]
 }

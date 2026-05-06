@@ -120,6 +120,65 @@ export async function completeReminder(
   }
 }
 
+/**
+ * Append text to the body of an existing reminder, separated by a
+ * blank line so the original capture stays readable. Used by the
+ * scope-sharpener to surface a clarifying question back at the
+ * reminder that originated the idea — closing the human-loop without
+ * leaving the Reminders app.
+ *
+ * Dry-mode and error-tolerant: a failed write-back never breaks the
+ * caller. The harness always has the question persisted in the idea
+ * body itself; the reminder write is a courtesy.
+ */
+export async function appendToReminder(
+  reminderId: string,
+  text: string,
+  listName: string = DEFAULT_LIST
+): Promise<boolean> {
+  if (dryMode()) {
+    log.debug(`reminders: dry mode, skipping append to ${reminderId}`);
+    return false;
+  }
+  const script = `
+    tell application "Reminders"
+      try
+        set theList to list "${escapeForAppleScript(listName)}"
+      on error
+        return "no_list"
+      end try
+      try
+        set targetReminder to (first reminder in theList whose id is "${escapeForAppleScript(reminderId)}")
+        try
+          set existingBody to body of targetReminder
+        on error
+          set existingBody to ""
+        end try
+        if existingBody is missing value then set existingBody to ""
+        if existingBody is "" then
+          set body of targetReminder to "${escapeForAppleScript(text)}"
+        else
+          set body of targetReminder to existingBody & "
+
+" & "${escapeForAppleScript(text)}"
+        end if
+        return "ok"
+      on error
+        return "not_found"
+      end try
+    end tell
+  `;
+  try {
+    const { stdout } = await execFileAsync("osascript", ["-e", script], {
+      timeout: 10_000,
+    });
+    return stdout.trim() === "ok";
+  } catch (err) {
+    log.warn(`reminders: append failed for ${reminderId}: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 export async function completeReminderByTitlePrefix(
   titlePrefix: string,
   listName: string = DEFAULT_LIST

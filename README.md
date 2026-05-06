@@ -27,36 +27,110 @@ npm link             # makes `harness` available on PATH
 # 3. Verify your environment
 harness doctor
 
-# 4. Run a full harness pass: harvest → brainstorm → schema + critic
-harness brainstorm
+# Optional: run the dashboard smoke suite (16 suites, ~33s)
+npm test             # full suite
+npm run test:quick   # skip the long build-spawn smoke (~2s)
+npm run check        # tsc + smokes (use before committing)
 
-# 5. Review ideas conversationally in Claude (mobile or desktop)
-#    Just ask: "What ideas are waiting for me?"
-#    Or hit the CLI directly:
-harness ideas waiting
+# 4. Open the dashboard — your home base.
+harness                       # mission control (no args)
+```
 
-# 6. Ship the next eligible idea — no slug needed.
-#    Picks the newest accepted (or auto-accepts a brainstormed one),
-#    or resumes a `building` idea whose previous session didn't reach PR.
-harness ship
+`harness` (no args) drops you into the interactive dashboard. From
+there one keystroke captures a new idea (`c`), spawns a brainstorm /
+ship run (`:`), or zooms into a live build (`enter` on an in-flight
+row). See [Dashboard](#dashboard) below for the full keymap. The
+underlying verbs are still available for scripts and agents:
 
-# Equivalent step-by-step if you want explicit control:
-harness review accept <slug>     # mark accepted
-harness build <slug>             # spawn Claude in target repo, open PR
+```bash
+# Equivalent CLI verbs (the dashboard runs these for you):
+harness brainstorm                # harvest → brainstorm → critic
+harness ship                      # do the next obvious thing
+harness ideas waiting             # list ideas needing review
+harness review accept <slug>      # mark accepted
+harness build <slug>              # spawn Claude in target repo, open PR
 harness resume <slug>             # recover a stuck `building` idea
+harness build watch <slug>        # tail a live build session
+harness review in-flight          # accepted / building / pr-open
+harness inspect                   # rolling metrics + last-run summary
+harness cleanup                   # remove worktrees for shipped ideas (dry)
+harness cleanup --apply           # actually remove
 
 # Slugs accept a unique prefix or substring, so `harness resume dm-cohorts`
 # resolves to the long capture as long as it's unambiguous.
-
-# 7. Track in-flight work
-harness review in-flight     # accepted / building / pr-open
-harness inspect              # rolling metrics + last-run summary
-harness build watch <slug>   # tail a live build session
-
-# 8. Cleanup worktrees for shipped ideas (dry-run by default)
-harness cleanup              # shows what would be removed
-harness cleanup --apply      # actually remove
 ```
+
+## Dashboard
+
+`harness` (no args) is mission control for the agentic idea-to-PR
+engine. Four zones, one cursor, every state visible at a glance:
+
+```
+┌─ harness · 0 in flight · 1 awaiting you · 2 today ───────────────┐
+│ NEXT  ▲ event-ledger needs your call (medium · 90s)  [enter]     │
+└──────────────────────────────────────────────────────────────────┘
+  ◆ IN FLIGHT · 1
+    ⠼ build · job-slug → job.title   letsbarker · 4m12s · 87 ev
+      └ build.stdout 12 passed · opening PR
+  ▲ AWAITING YOU · 1
+  ▸ ▲ event-ledger                     letsbarker · medium · 2m ago
+      problem  Operational knowledge locked in transient surfaces…
+      variants 1. Event ledger only — append-only domain_events…
+               2. Event ledger + MCP — same table plus MCP server…
+               3. Full observability platform — pgvector + Stream…
+      risks    ▲ "tracks/learns from all app behavior" too broad
+               ▲ chat ingestion has Stream plan + privacy story
+      build    simplest version (event ledger only)
+  ✓ TODAY · 2
+    11:24  Job slug → job.title              ↓💭✓◆★ PR #1290
+    09:15  event-ledger                       ↓💭
+```
+
+**Zones**
+
+- **NEXT** — single line, the obvious-next action computed via the
+  same logic `harness ship` uses (newest accepted → newest building →
+  newest brainstormed).
+- **IN FLIGHT** — every active run (no `summary.json` yet). Each
+  row tails its own `runs/<id>/events.ndjson` live; the trailing
+  line shows the most recent event. Runs idle > 5 min are flagged
+  `(stalled)` with a paused glyph.
+- **AWAITING YOU** — brainstormed ideas needing a verdict. Selected
+  row expands inline with the verdict, top variants, top risks, and
+  the recommended build target — no `$EDITOR` trip needed.
+- **TODAY** — rolling 24h activity collapsed by slug into a
+  lifecycle trail (↓ captured · 💭 brainstormed · ✓ accepted · ◆
+  build started · ★ PR open).
+
+**Keymap**
+
+| keys | action |
+|---|---|
+| `↑↓` `j` `k` | select row |
+| `tab`        | jump to next zone |
+| `g` `G`      | first / last row |
+| `enter`      | (flight) zoom into watch TUI · (await) expand · (today) open idea |
+| `a` `t` `r`  | accept / needs-more-thought / reject (await zone) |
+| `b`          | build the selected accepted idea |
+| `o`          | open idea file in `$EDITOR` |
+| `c`          | inline capture — type a title, Enter to save |
+| `:`          | run a verb (brainstorm / ship / doctor / cleanup) |
+| `p`          | cycle project filter |
+| `?`          | full keymap overlay |
+| `q` `ctrl+c` | quit |
+
+**Live behavior**
+
+The dashboard refreshes from disk every second and tails active
+events.ndjson files concurrently — capturing an idea, accepting one,
+or spawning a verb shows up in the next tick without a manual
+refresh. Mutations preserve the cursor position by logical id (slug
+or runId), so pressing `a` doesn't yank your selection onto a
+neighbor.
+
+The dashboard is TTY-only. `harness --json` and `harness --ndjson`
+return a clean BAD_INPUT envelope pointing agents at `harness ideas
+list` instead.
 
 ### Agent-friendly output
 
@@ -224,7 +298,161 @@ called "App Ideas", then `harness brainstorm`.
 | `IDEA_HARNESS_REPO_<KEY>` | repo path override per project | from `projects.yml` |
 | `IDEA_HARNESS_PER_IDEA_TARGET` | soft token target per brainstorm | 10000 |
 | `IDEA_HARNESS_PER_RUN_CAP` | hard run-level token cap | 100000 |
+| `IDEA_HARNESS_AUTO_FLOW` | when `true`, the brainstormer auto-promotes high-confidence accept/reject verdicts past the human gate (see "Auto-flow" below) | `false` |
+| `IDEA_HARNESS_AUTO_SHARPEN` | when `true`, `needs-more-thought` brainstorms trigger the sharpener (see "Scope sharpener" below) | `false` |
+| `IDEA_HARNESS_AUTO_FOLLOW` | when `true`, `harness follow` / `watch-prs` actually spawn Claude and run `gh pr merge`; without it both verbs run as dry probes (see "PR follow-through" below) | `false` |
+| `IDEA_HARNESS_SLACK_CHANNEL` / `IDEA_HARNESS_SLACK_CAPTURE_EMOJI` / `IDEA_HARNESS_SLACK_LOOKBACK_HOURS` | Slack capture source — channel id, trigger emoji, lookback window | required / `star` / `24` |
+| `SLACK_BOT_TOKEN` | bearer token for the Slack capture source | — |
+| `IDEA_HARNESS_EMAIL_ENDPOINT` / `IDEA_HARNESS_EMAIL_TOKEN` | JSON-over-HTTPS inbox endpoint + optional bearer for the email capture source | — |
+| `IDEA_HARNESS_SYNTHESIS_THRESHOLD` | similarity threshold (0-1) for cross-idea synthesis duplicate detection | `0.7` |
 | `LOG_LEVEL` | `silent`, `error`, `warn`, `info`, `debug` | `info` |
+
+## Auto-flow
+
+After each brainstorm commit, the harness checks the verdict:
+
+- `Recommended action: accept` + `Confidence: high` → idea status flips
+  straight to `accepted` (skipping AWAITING YOU).
+- `Recommended action: reject` + `Confidence: high` → idea status flips
+  straight to `rejected`.
+- Any other combination (medium/low confidence, `needs-more-thought`)
+  stays at `brainstormed` for human review — no behavior change.
+
+Auto-flow is **opt-in**: set `IDEA_HARNESS_AUTO_FLOW=true` to enable.
+Default is off. Every auto-decision is journaled (`idea.auto_flowed`)
+and reversible — `harness review accept|reject|needs-more-thought
+<slug>` overrides at any time, and the journal preserves both decisions.
+
+The dashboard surfaces auto-flow visibly:
+
+- TODAY trail glyph: `⚡` injected before the accepted/rejected
+  glyph (e.g., `↓💭⚡✓` for "captured, brainstormed,
+  auto-accepted").
+- NEXT bar: `⚡` prefix on auto-flowed picks.
+- AWAITING YOU empty state: when auto-flow has handled ideas, the
+  inbox-zero message swaps to "auto-flow handled N ideas — press
+  [enter] to see TODAY".
+
+## Scope sharpener
+
+When the brainstormer commits a `needs-more-thought` verdict and
+`IDEA_HARNESS_AUTO_SHARPEN=true`, the harness invokes a small follow-up
+agent that:
+
+- Reads the brainstorm's `Risks and open questions` + `Why` lines.
+- Asks the LLM (cheap critic-class transport) for the SINGLE
+  highest-leverage clarifying question.
+- Appends an `## Open Question` section to the idea body.
+- Best-effort writes the question back to the originating capture
+  (Apple Reminders → appended to the reminder body) so the user can
+  answer it where they brain-dumped the idea.
+
+The idea status stays at `brainstormed` — the sharpener never
+auto-decides anything. To answer the question:
+
+```
+harness reply <slug> "your answer here"
+```
+
+`reply` appends a `### Reply` block under the most recent Open
+Question, bumps `loop_count`, and journals `idea.replied`. Re-run
+`harness brainstorm` (or wait for the next pass) and the brainstormer
+will see the answer in the body and produce a fresh verdict.
+
+The dashboard surfaces the sharpener via:
+
+- `❓` row prefix + trail glyph in TODAY (e.g., `↓💭❓`) for ideas
+  with a pending question.
+- AWAITING YOU detail pane shows the question text + the exact
+  `harness reply` invocation to copy.
+
+The sharpener is opt-in. Default off. Failure (LLM error, write-back
+failure) is logged and never breaks the brainstorm commit.
+
+## PR follow-through
+
+Phase 3. Once a build opens a PR, `harness follow [<slug>]` (one-shot)
+or `harness watch-prs` (daemon, default 5-minute interval) polls the
+PR with `gh` and reacts:
+
+- CI failed → idea status flips to `ci-failed`, then Claude Code is
+  spawned in the worktree with the failing log + "fix this. test
+  locally. push."
+- Reviewer requested changes → status flips to
+  `review-changes-requested`, Claude Code spawned with the comment
+  thread + diff + "address this comment."
+- CI green + approved + mergeable → `gh pr merge --merge` →
+  status: `merged`.
+- CI pending → status: `ci-running`. No spawn, no merge.
+
+Both verbs are gated by `IDEA_HARNESS_AUTO_FOLLOW=true`. Without it
+they run in **dry mode**: poll-and-report only, no spawn or merge.
+Default off keeps the same posture as the auto-flow / sharpener
+flags — opt in when you want hands-off operation.
+
+The dashboard surfaces the new states with their own glyphs:
+
+- `⚙` (yellow) ci-running, `⚙` (red) ci-failed
+- `✎` review-changes-requested
+- `✅` merged
+
+A typical full-loop trail might read `↓💭⚡✓◆★⚙✅` —
+captured, brainstormed, auto-flow-accepted, build started, PR open,
+CI ran, merged.
+
+A small `lib/github.ts` wrapper (around `gh pr view / pr checks /
+pr merge / run view`) is the single pinch point for GitHub access.
+Tests stub it via `setGhRunner` and stub the Claude spawn via the
+`spawnClaude` opt — `_smoke_pr_followthrough.ts` covers all five
+state-machine paths without touching the network.
+
+Webhook receivers were called out as a follow-on in the original
+roadmap; this poll-based daemon is the first cut.
+
+## Compounding extras (Phase 4)
+
+Three smaller items that don't enable each other but each give real
+lift once the core auto-flow / sharpener / PR-followthrough loop is
+running.
+
+### Daily digest
+
+```
+harness digest [--date YYYY-MM-DD]
+```
+
+Reads the journal and writes `runs/digest-<date>.md` summarizing
+what got captured / brainstormed / accepted / rejected /
+auto-flowed / sharpened / shipped on that UTC day. Idempotent —
+re-running overwrites the file. Wire to cron for scheduled
+delivery.
+
+### Multi-source capture: Slack + email
+
+Two new sources behind the existing `lib/sources/` registry:
+
+- **Slack** — `harness capture --from slack` polls a channel for
+  messages tagged with a reaction emoji (default ⭐), turns each
+  into a raw idea, and reacts back with `:eyes:` to dedupe across
+  polls. Needs `SLACK_BOT_TOKEN` and `IDEA_HARNESS_SLACK_CHANNEL`.
+- **Email** — `harness capture --from email` polls a JSON-over-HTTPS
+  inbox endpoint (the small adapter you'd put in front of IMAP
+  yourself, or a Cloudflare Email Worker / SES Lambda). DELETEs the
+  message ID after consumption.
+
+Both sources use only built-in `fetch` — no new SDK deps. Tests
+inject custom fetchers via `setSlackFetch` / `setEmailFetch`.
+
+### Cross-idea synthesis
+
+`scripts/lib/synthesis.ts` exposes `findSimilar(title, body, ideas,
+opts?, excludeSlug?)`. Cheap-and-local Jaccard over normalized
+word-bigrams (no LLM call, no embedding model) flags candidates
+with similarity ≥ `IDEA_HARNESS_SYNTHESIS_THRESHOLD` (default 0.7)
+so the brainstormer can prefer "this overlaps with `<slug>` —
+bundle / supersede" over a blank-slate brainstorm. The function is
+deliberately library-only; callers (the dashboard NEXT bar, the
+brainstormer Tier 1 prompt) opt in.
 
 ## Why This Shape
 

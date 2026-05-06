@@ -213,6 +213,56 @@ review
     );
   });
 
+// ── reply ───────────────────────────────────────────────────────────
+program
+  .command("reply")
+  .description("Answer the most recent Open Question the sharpener posed to an idea")
+  .argument("<slug>")
+  .argument("<answer...>", "the answer text (multiple words allowed without quoting)")
+  .action(async (slug: string, answerParts: string[]) => {
+    const { runReply } = await import("../scripts/commands/reply");
+    await runVerb(
+      "reply",
+      { slug, answer: answerParts.join(" ") },
+      runReply,
+      getFlags(program)
+    );
+  });
+
+// ── digest (Phase 4) ────────────────────────────────────────────────
+program
+  .command("digest")
+  .description("Generate runs/digest-<date>.md from the journal for a UTC day")
+  .option("--date <yyyy-mm-dd>", "explicit date; defaults to today UTC")
+  .action(async (opts) => {
+    const { runDigest } = await import("../scripts/commands/digest");
+    await runVerb("digest", { date: opts.date }, runDigest, getFlags(program));
+  });
+
+// ── follow / watch-prs (Phase 3) ────────────────────────────────────
+program
+  .command("follow")
+  .description("Poll open PRs and act on CI / review state (default off — see IDEA_HARNESS_AUTO_FOLLOW)")
+  .argument("[slug]", "explicit idea slug; omit to follow every active PR")
+  .action(async (slug: string | undefined) => {
+    const { runFollow } = await import("../scripts/commands/follow");
+    await runVerb("follow", { slug }, runFollow, getFlags(program));
+  });
+program
+  .command("watch-prs")
+  .description("Daemon: run `harness follow` on a fixed interval until SIGINT")
+  .option("--interval <seconds>", "poll interval in seconds", (s) => parseInt(s, 10))
+  .option("--max-cycles <n>", "stop after N cycles (mostly for tests)", (s) => parseInt(s, 10))
+  .action(async (opts) => {
+    const { runWatchPrs } = await import("../scripts/commands/watch-prs");
+    await runVerb(
+      "watch-prs",
+      { interval: opts.interval, maxCycles: opts.maxCycles },
+      runWatchPrs,
+      getFlags(program)
+    );
+  });
+
 // ── ship ────────────────────────────────────────────────────────────
 program
   .command("ship")
@@ -285,9 +335,10 @@ build
   .command("watch")
   .description("Tail the live event stream for an in-flight build")
   .argument("<slug>")
-  .action(async (slug: string) => {
+  .option("--demo", "render the TUI with synthetic events (no live build needed)")
+  .action(async (slug: string, opts) => {
     const { runWatch } = await import("../scripts/commands/build");
-    await runVerb("build.watch", { slug }, runWatch, getFlags(program));
+    await runVerb("build.watch", { slug, demo: !!opts.demo }, runWatch, getFlags(program));
   });
 build
   .command("status")

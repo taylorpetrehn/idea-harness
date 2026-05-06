@@ -8,7 +8,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { fuzzyTitleMatch } from "./text";
+import * as crypto from "crypto";
+import { fuzzyTitleMatch, slugify } from "./text";
 import { atomicWriteFileSync } from "./atomic";
 import { appendJournal } from "./journal";
 import { log } from "./log";
@@ -27,6 +28,13 @@ export type IdeaStatus =
   | "needs-more-thought"
   | "building"
   | "pr-open"
+  // Phase 3 (PR follow-through): the engine watches the PR after it
+  // opens and reacts to CI / review state. `pr-open` is the entry
+  // point; the watcher then drives the idea through these.
+  | "ci-running"
+  | "ci-failed"
+  | "review-changes-requested"
+  | "merged"
   | "shipped";
 
 export interface IdeaSummary {
@@ -71,6 +79,75 @@ export function readIdeaFile(slug: string): string {
   return fs.readFileSync(filepath, "utf8");
 }
 
+// ── creation ──────────────────────────────────────────────────────────
+
+export interface CreateRawIdeaInput {
+  title: string;
+  notes?: string;
+  project?: string;
+  source?: string;
+}
+
+export interface CreatedIdea {
+  slug: string;
+  filename: string;
+  id: string;
+  title: string;
+  project: string;
+}
+
+/**
+ * Write a fresh `raw` idea to ideas/<slug>.md. Single home for the
+ * frontmatter shape so callers (capture verb, dashboard inline capture,
+ * external integrations) all produce identical files.
+ *
+ * Caller resolves the project before calling — this lib doesn't reach
+ * into projects.yml on its own to avoid pulling that dep into every
+ * caller. The capture verb does it via `resolveProject`; the dashboard
+ * passes `project` through directly.
+ */
+export function createRawIdea(input: CreateRawIdeaInput): CreatedIdea {
+  if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
+
+  const id = crypto.randomBytes(4).toString("hex");
+  const slug = `${slugify(input.title)}-${id.slice(0, 4)}`;
+  const filepath = path.join(IDEAS_DIR, `${slug}.md`);
+  const project = input.project ?? "letsbarker";
+  const source = input.source ?? "capture";
+  const title = input.title.replace(/"/g, '\\"');
+
+  const content = `---
+id: ${id}
+title: "${title}"
+status: raw
+source: ${source}
+project: ${project}
+captured_at: ${new Date().toISOString()}
+brainstormed_at: ~
+decided_at: ~
+github_issue: ~
+github_pr: ~
+loop_count: 0
+---
+
+## Raw Idea
+
+${input.title}
+${input.notes ? "\n## Notes\n\n" + input.notes + "\n" : ""}
+## Brainstorm
+
+<!-- Filled by the brainstormer. -->
+`;
+
+  atomicWriteFileSync(filepath, content);
+  appendJournal({
+    type: "idea.captured",
+    slug,
+    data: { project, source, title: input.title },
+  });
+  return { slug, filename: `${slug}.md`, id, title: input.title, project };
+}
+
 export function setStatusInFile(filepath: string, status: IdeaStatus): void {
   let content = fs.readFileSync(filepath, "utf8");
   const prior = content.match(/^status:\s*(.+)$/m)?.[1].trim();
@@ -81,6 +158,9 @@ export function setStatusInFile(filepath: string, status: IdeaStatus): void {
   if (status === "accepted" || status === "rejected" || status === "needs-more-thought") {
     content = content.replace(/^decided_at: .+$/m, `decided_at: ${new Date().toISOString()}`);
   }
+  // Phase 3 PR-followthrough states never re-stamp decided_at — that
+  // moment was when the human (or auto-flow) accepted the idea, not
+  // every CI flap afterwards.
   atomicWriteFileSync(filepath, content);
   appendJournal({
     type: "idea.status",
@@ -223,7 +303,7 @@ export function parseIdeaFile(filepath: string): IdeaSummary {
   };
 }
 
-interface ParsedVerdict {
+export interface ParsedVerdict {
   recommended_action?: IdeaSummary["recommended_action"];
   confidence?: IdeaSummary["confidence"];
   if_accepted_build?: string;
@@ -237,7 +317,7 @@ interface ParsedVerdict {
  * dm-cohorts run before the schema gate landed). Anything else returns
  * empty fields, and the caller decides whether to warn.
  */
-function parseVerdict(content: string): ParsedVerdict {
+export function parseVerdict(content: string): ParsedVerdict {
   const action = matchBoldLabel(content, "Recommended action");
   const confidence = matchBoldLabel(content, "Confidence");
   const build = matchBoldLabel(content, "If accepted, build");
