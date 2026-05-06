@@ -133,7 +133,16 @@ than appearing to "quit the harness session."
 
 ## Smoke coverage
 
-12 dedicated smoke files in `_dashboard/_smoke_*.ts`. Run any one:
+15+ dedicated smoke files in `_dashboard/_smoke_*.ts`, plus the
+static render demo `_smoke.ts`. Run them all at once:
+
+```bash
+tsx scripts/commands/_dashboard/_smoke_all.ts
+tsx scripts/commands/_dashboard/_smoke_all.ts --quick    # skip build (faster)
+tsx scripts/commands/_dashboard/_smoke_all.ts --verbose  # dump stderr on failures
+```
+
+Or run an individual suite:
 
 ```bash
 tsx scripts/commands/_dashboard/_smoke.ts --cols=60   # static render
@@ -146,11 +155,15 @@ tsx scripts/commands/_dashboard/_smoke_header.ts      # widths 100→30
 tsx scripts/commands/_dashboard/_smoke_today.ts       # lifecycle collapse
 tsx scripts/commands/_dashboard/_smoke_cursor.ts      # cursor stickiness
 tsx scripts/commands/_dashboard/_smoke_stalled.ts     # stall detection
+tsx scripts/commands/_dashboard/_smoke_abandon.ts     # `x` abandon stalled
 tsx scripts/commands/_dashboard/_smoke_build.ts       # build-spawn handoff
 tsx scripts/commands/_dashboard/_smoke_edge.ts        # cold start, missing dirs
+tsx scripts/commands/_dashboard/_smoke_why.ts         # verdict rationale
+tsx scripts/commands/_dashboard/_smoke_search.ts      # `/` text search
+tsx scripts/commands/_dashboard/_smoke_empty.ts       # filtered vs genuine empty-state
 ```
 
-124 assertions total, all currently passing. Each smoke creates and
+160+ assertions total, all currently passing. Each smoke creates and
 cleans up its own scratch artifacts (run dirs, idea files, journal
 entries via `purgeJournalForSlug`) so re-running them never leaves
 state behind.
