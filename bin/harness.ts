@@ -75,7 +75,12 @@ program
   .option("--ndjson", "stream events as JSON lines, terminating with the envelope")
   .option("--no-color", "disable ANSI color in pretty mode")
   .showHelpAfterError(true)
-  .configureHelp({ sortSubcommands: true });
+  .configureHelp({ sortSubcommands: true })
+  .action(async () => {
+    // No subcommand → drop the user into the interactive dashboard.
+    const { run } = await import("../scripts/commands/dashboard");
+    await runVerb("dashboard", {}, run, getFlags(program));
+  });
 
 // ── contracts ───────────────────────────────────────────────────────
 program
