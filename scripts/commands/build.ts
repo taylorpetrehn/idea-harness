@@ -60,7 +60,7 @@ export async function runStart(args: BuildStartArgs, out: Output): Promise<void>
 
   const runRec = startRun({ trigger: "build.start", flags: args });
   const events = openRunEvents(runRec, "build.start", out);
-  let outcome: GraduateOutcome;
+  let outcome: GraduateOutcome = "crashed";
   try {
     outcome = await graduateOne(idea, runRec, {
       intent: "build",
@@ -69,6 +69,10 @@ export async function runStart(args: BuildStartArgs, out: Output): Promise<void>
       events,
     });
   } finally {
+    // Always emit a canonical terminal event so anything tailing the
+    // events stream (the watch TUI, MCP consumers) has one signal that
+    // means "the run is over" — regardless of outcome.
+    events.emit("build.done", { slug: idea.slug, intent: "build", outcome });
     events.close();
   }
   finalizeRun(runRec, { status: "complete", slug: idea.slug, intent: "build", outcome });
@@ -120,7 +124,7 @@ export async function runResume(args: BuildResumeArgs, out: Output): Promise<voi
 
   const runRec = startRun({ trigger: "build.resume", flags: args });
   const events = openRunEvents(runRec, "build.resume", out);
-  let outcome: GraduateOutcome;
+  let outcome: GraduateOutcome = "crashed";
   try {
     outcome = await graduateOne(idea, runRec, {
       intent: "resume",
@@ -129,6 +133,7 @@ export async function runResume(args: BuildResumeArgs, out: Output): Promise<voi
       events,
     });
   } finally {
+    events.emit("build.done", { slug: idea.slug, intent: "resume", outcome });
     events.close();
   }
   finalizeRun(runRec, { status: "complete", slug: idea.slug, intent: "resume", outcome });
@@ -229,13 +234,26 @@ export async function runWatch(args: BuildWatchArgs, out: Output): Promise<void>
     return;
   }
 
-  const { logPath, eventsPath } = findLatestBuildArtifact(idea.slug);
+  const { runId, logPath, eventsPath } = findLatestBuildArtifact(idea.slug);
   // Prefer events.ndjson when present — it's structured and replays cleanly
   // in --ndjson mode. Fall back to the raw log for older runs.
   const followPath = eventsPath ?? logPath;
   if (!followPath || !fs.existsSync(followPath)) {
     out.error("NOT_FOUND", `No build log found for ${idea.slug}.`, {
       hint: "The build may not have started yet, or it ran in offline/dry mode.",
+    });
+    return;
+  }
+
+  // Stale-run guard: if the latest run has already finalized (summary.json
+  // present), don't attach a live tail to it — the spinner would never
+  // resolve. Tell the caller and point at --demo / a fresh build.
+  const summaryPath = runId ? path.join(RUNS_DIR, runId, "summary.json") : null;
+  const runFinalized = !!(summaryPath && fs.existsSync(summaryPath));
+  if (runFinalized) {
+    const summary = summaryPath ? safeParse(fs.readFileSync(summaryPath, "utf8")) as { outcome?: string } | null : null;
+    out.error("NOT_FOUND", `Latest run for ${idea.slug} already finished (outcome=${summary?.outcome ?? "unknown"}).`, {
+      hint: "Start a new build (`harness build start <slug>`) or preview the TUI with `--demo`.",
     });
     return;
   }
