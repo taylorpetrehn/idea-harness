@@ -1,32 +1,9 @@
 {
   "name": "idea-harness",
-  "version": "2.0.0-alpha.1",
-  "description": "A purpose-built harness for capturing, brainstorming, and shipping ideas as real PRs",
-  "bin": {
-    "harness": "./bin/harness.ts"
-  },
-  "scripts": {
-    "test": "tsx scripts/commands/_dashboard/_smoke_all.ts",
-    "test:quick": "tsx scripts/commands/_dashboard/_smoke_all.ts --quick",
-    "test:verbose": "tsx scripts/commands/_dashboard/_smoke_all.ts --verbose",
-    "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
-  },
-  "dependencies": {
-    "commander": "^13.0.0",
-    "ink": "^7.0.1",
-    "ink-spinner": "^5.0.0",
-    "react": "^19.2.5",
-    "zod": "^3.23.8"
-  },
-  "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
-    "@modelcontextprotocol/sdk": "^1.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/react": "^19.2.14",
-    "tsx": "^4.19.2",
-    "typescript": "^5.3.0"
+  "version": "3.0.0",
+  "description": "Documentation home and Mac launch workspace for the idea-harness pipeline (a Claude Code skill at ~/.claude/skills/idea-harness/ + LaunchAgents at ~/Library/LaunchAgents/). The standalone Node CLI was archived 2026-05-07 at tag archive/v2-alpha.",
+  "private": true,
+  "engines": {
+    "comment": "No runtime dependencies. This package is no longer an executable."
   }
 }

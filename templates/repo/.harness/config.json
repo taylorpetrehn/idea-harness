@@ -1,0 +1,76 @@
+{
+  "name": "letsbarker",
+
+  "identity": {
+    "github_repo": "BarkerEnterprises/LetsBarker",
+    "local_path": "~/Projects/PrimaryBarker/LetsBarker"
+  },
+
+  "vcs": {
+    "base_branch": "preview",
+    "branch_pattern": "idea/{slug-stub}-{id4}",
+    "uses_worktrees": true,
+    "worktree_pattern": "../LetsBarker-wt-{slug}",
+    "bot": {
+      "name": "LetsBarker",
+      "email": "269561053+LetsBarker@users.noreply.github.com",
+      "pat_file": "~/.openclaw/secrets/letsbarker-bot-pat"
+    }
+  },
+
+  "stacks": ["rails", "expo", "vite"],
+
+  "commands": {
+    "smoke":       "bin/rails runner 'puts ActiveRecord::Base.connection.tables.size'",
+    "test_rails":  "bundle exec rspec",
+    "test_mobile": "cd mobile && npm test -- --watchAll=false",
+    "lint":        "bundle exec rubocop",
+    "dev_server":  "bin/dev"
+  },
+
+  "evidence": {
+    "results_file": ".harness/results.json",
+    "evidence_patterns": [
+      "tmp/screenshots/**/*.png",
+      "tmp/maestro/**/*.{json,xml}",
+      "tmp/playwright/**/*.png",
+      "log/test.log",
+      ".harness/results-*.json"
+    ],
+    "evaluators": [
+      {
+        "key": "rails",
+        "command": "bundle exec rspec --format json --out .harness/results-rails.json",
+        "when_touched": ["app/**", "config/**", "lib/**", "db/**", "spec/**"]
+      },
+      {
+        "key": "mobile",
+        "command": "cd mobile && npm test -- --json --outputFile=../.harness/results-mobile.json",
+        "when_touched": ["mobile/**"]
+      },
+      {
+        "key": "ui",
+        "command": "npx playwright test --reporter=json",
+        "when_touched": ["app/views/**", "app/javascript/**", "mobile/src/**"]
+      }
+    ],
+    "merge_command": ".harness/merge-results.sh"
+  },
+
+  "safety": {
+    "must_not_touch": [
+      "db/structure.sql",
+      "db/schema.rb",
+      "config/credentials.yml.enc",
+      "config/master.key"
+    ],
+    "require_human_review_when_touching": [
+      "app/models/user.rb",
+      "app/controllers/sessions_controller.rb",
+      "config/initializers/devise.rb",
+      "db/migrate/**"
+    ],
+    "never_force_push_branches": ["main", "preview"],
+    "always_label_pr": ["agent:needs-review"]
+  }
+}

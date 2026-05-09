@@ -1,25 +1,6 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
-*.tsbuildinfo
-
-# Generated runtime state — these directories' shape is preserved via
-# .gitkeep but their contents are local artifacts, not source.
-ideas/*.md
-runs/*
-state/*
-!ideas/.gitkeep
-!runs/.gitkeep
-!state/.gitkeep
-
-# Individualized product context. The repo ships templates as
-# context/*.example.md; the live files are local-only because they
-# describe a specific product (often with internal details).
-context/product.md
-context/decisions.md
-
 # Editor + OS
 .DS_Store
 .vscode/
@@ -38,5 +19,16 @@ yarn-error.log*
 .env.local
 .env.*.local
 
-# Claude Code session-local files (ralph-loop state, etc.)
-.claude/
+# Claude Code session-local artifacts (don't commit these), but DO commit
+# the tracked harness primitives at .claude/{CLAUDE.md,settings.json,hooks/,agents/}.
+.claude/.ralph-state*
+.claude/.evidence-reads
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# Local v2-alpha CLI runtime artifacts (preserved on disk, not tracked).
+# The CLI is archived at tag archive/v2-alpha; these dirs are effectively dead.
+ideas/
+runs/
+state/
+context/
