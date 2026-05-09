@@ -60,7 +60,11 @@ Then for the BUILD step:
 
 3. Validate handoff (references/handoff-to-build.md): all required frontmatter fields present, brainstorm has the chosen variant marked. If invalid, revert status to brainstormed (or its current state) with a Notes entry explaining what's missing, and continue to the next idea.
 
-4. Pre-build hygiene: cd into project.local_path. Run `bash -lc "git status --porcelain"`. If non-empty, append a Notes entry, do NOT proceed with this idea, continue to next.
+4. Set up the build path (worktree-aware):
+   - If `project.vcs.uses_worktrees` is true: create a fresh worktree from origin. The build_path is the new worktree; the dirty state of `project.local_path` (the main checkout) is irrelevant and must NOT block the build.
+       bash -lc "cd {project.local_path} && git fetch origin && git worktree add {project.worktree_pattern} -B idea/{slug-stub}-{id4} origin/{project.vcs.base_branch}"
+     where `slug-stub` is the first ~30 chars of the idea's slug (with the trailing -id4 suffix dropped) and `{id4}` is the last 4 hex chars.
+   - If `project.vcs.uses_worktrees` is false: build_path is `project.local_path` itself. Run `bash -lc "cd {project.local_path} && git status --porcelain"`. If non-empty, append a Notes entry, do NOT proceed; continue to next idea.
 
 5. Update the idea's frontmatter: status: building, set last_touched. Use a single Edit call.
 
