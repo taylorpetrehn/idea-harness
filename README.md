@@ -1,467 +1,732 @@
 # Idea Harness
 
-A purpose-built harness that turns half-formed thoughts into real pull
-requests, end-to-end. Six layers: capture (Apple Reminders), brainstorm
-(Claude Opus), validate (deterministic schema + Claude Haiku critic),
-review (conversational, in Claude), graduate (Claude Code spawned in the
-target repo, opens a PR).
-
-This is **the** idea system — there is no separate build pipeline. The
-brainstorm IS the spec. `harness build <slug>` hands an accepted idea
-to a fresh Claude Code session inside the target repo's working directory
-and lets it explore the codebase, implement the chosen variant on a
-feature branch, and open the PR.
-
-## Quick Start
-
-```bash
-# 1. Seed your product context from the templates
-cp context/product.example.md   context/product.md
-cp context/decisions.example.md context/decisions.md
-$EDITOR context/product.md context/decisions.md   # fill them in
-
-# 2. Install deps and link the binary
-npm install
-npm link             # makes `harness` available on PATH
-
-# 3. Verify your environment
-harness doctor
-
-# Optional: run the dashboard smoke suite (16 suites, ~33s)
-npm test             # full suite
-npm run test:quick   # skip the long build-spawn smoke (~2s)
-npm run check        # tsc + smokes (use before committing)
-
-# 4. Open the dashboard — your home base.
-harness                       # mission control (no args)
-```
-
-`harness` (no args) drops you into the interactive dashboard. From
-there one keystroke captures a new idea (`c`), spawns a brainstorm /
-ship run (`:`), or zooms into a live build (`enter` on an in-flight
-row). See [Dashboard](#dashboard) below for the full keymap. The
-underlying verbs are still available for scripts and agents:
-
-```bash
-# Equivalent CLI verbs (the dashboard runs these for you):
-harness brainstorm                # harvest → brainstorm → critic
-harness ship                      # do the next obvious thing
-harness ideas waiting             # list ideas needing review
-harness review accept <slug>      # mark accepted
-harness build <slug>              # spawn Claude in target repo, open PR
-harness resume <slug>             # recover a stuck `building` idea
-harness build watch <slug>        # tail a live build session
-harness review in-flight          # accepted / building / pr-open
-harness inspect                   # rolling metrics + last-run summary
-harness cleanup                   # remove worktrees for shipped ideas (dry)
-harness cleanup --apply           # actually remove
-
-# Slugs accept a unique prefix or substring, so `harness resume dm-cohorts`
-# resolves to the long capture as long as it's unambiguous.
-```
-
-## Dashboard
-
-`harness` (no args) is mission control for the agentic idea-to-PR
-engine. Four zones, one cursor, every state visible at a glance:
+An autonomous pipeline that turns half-formed thoughts captured on the go (Apple Reminders / Siri) into shipped pull requests across multiple projects, with a human in the loop only when judgment is actually needed.
 
 ```
-┌─ harness · 0 in flight · 1 awaiting you · 2 today ───────────────┐
-│ NEXT  ▲ event-ledger needs your call (medium · 90s)  [enter]     │
-└──────────────────────────────────────────────────────────────────┘
-  ◆ IN FLIGHT · 1
-    ⠼ build · job-slug → job.title   letsbarker · 4m12s · 87 ev
-      └ build.stdout 12 passed · opening PR
-  ▲ AWAITING YOU · 1
-  ▸ ▲ event-ledger                     letsbarker · medium · 2m ago
-      problem  Operational knowledge locked in transient surfaces…
-      variants 1. Event ledger only — append-only domain_events…
-               2. Event ledger + MCP — same table plus MCP server…
-               3. Full observability platform — pgvector + Stream…
-      risks    ▲ "tracks/learns from all app behavior" too broad
-               ▲ chat ingestion has Stream plan + privacy story
-      build    simplest version (event ledger only)
-  ✓ TODAY · 2
-    11:24  Job slug → job.title              ↓💭✓◆★ PR #1290
-    09:15  event-ledger                       ↓💭
+Hey Siri, add to App Ideas
+        │
+        ▼
+┌────────────────┐  60s  ┌─────────────────────┐  1 hr   ┌──────────────────┐
+│ Apple Reminders│──────▶│ ~/.claude/plans/    │────────▶│ brainstorm +     │
+│ (any device)   │       │ specs/<slug>/       │         │ critic gauntlet  │
+└────────────────┘       │ idea.md             │         └────────┬─────────┘
+                         └─────────────────────┘                  │
+                                  ▲                               │
+                                  │                               ▼
+                                  │                       ┌───────────────┐
+                                  │                       │ status:       │
+                                  │                       │ brainstormed  │  awaits accept
+                                  │                       │ needs-detail  │  10 min
+                                  │                       └───────┬───────┘
+                                  │                               │
+                                  │                               ▼
+                                  │                  ┌──────────────────────┐
+                                  │                  │ Claude Remote        │
+                                  └─ Edit lands ─────│ Control session on   │
+                                     in idea.md      │ your phone           │
+                                                     │ (push notification)  │
+                                                     └──────────────────────┘
 ```
 
-**Zones**
+> **This repo's role changed in 2026-05.** It used to be a standalone Node CLI (`harness ...`) with an Ink dashboard; that was archived at tag `archive/v2-alpha`. The system now lives as a vanilla Claude Code skill at `~/.claude/skills/idea-harness/` plus three local LaunchAgents. **This repo is now the Mac launch workspace** for spawned Claude sessions and the canonical documentation home. It is not a runtime — nothing inside it executes except the `.claude/` hooks.
 
-- **NEXT** — single line, the obvious-next action computed via the
-  same logic `harness ship` uses (newest accepted → newest building →
-  newest brainstormed).
-- **IN FLIGHT** — every active run (no `summary.json` yet). Each
-  row tails its own `runs/<id>/events.ndjson` live; the trailing
-  line shows the most recent event. Runs idle > 5 min are flagged
-  `(stalled)` with a paused glyph.
-- **AWAITING YOU** — brainstormed ideas needing a verdict. Selected
-  row expands inline with the verdict, top variants, top risks, and
-  the recommended build target — no `$EDITOR` trip needed.
-- **TODAY** — rolling 24h activity collapsed by slug into a
-  lifecycle trail (↓ captured · 💭 brainstormed · ✓ accepted · ◆
-  build started · ★ PR open).
+---
 
-**Keymap**
+## Table of contents
 
-| keys | action |
+- [What this gives you](#what-this-gives-you)
+- [Architecture](#architecture)
+- [The flow, in detail](#the-flow-in-detail)
+- [Setting it up on a fresh Mac](#setting-it-up-on-a-fresh-mac)
+- [Onboarding a new project](#onboarding-a-new-project)
+- [Onboarding an existing project](#onboarding-an-existing-project)
+- [Operations](#operations)
+- [Reference](#reference)
+- [Known gotchas](#known-gotchas)
+- [Archive (v2.0.0-alpha)](#archive-v200-alpha)
+
+---
+
+## What this gives you
+
+A **single capture surface** (Siri/Reminders, ubiquitous across iPhone/Watch/CarPlay/HomePod/share-sheet) that flows into a **GAN-style evaluator loop** (a brainstormer that drafts variants, a fresh-context critic that grades the draft) and routes the result to **the right project** (LetsBarker, OpenClaw, Rewilding, …) using a keyword-matched registry.
+
+When the loop produces a clean brainstorm, it goes into your queue (`/inflight`). When the loop produces an open question (`needs-detail`), it **opens a Claude Code Remote Control session on your phone** with the brainstorm pre-loaded — you tap the push notification, read the variants one-handed, type your decision, and the session writes the answer into `idea.md` and exits. From the desk, "accept this and build it" graduates accepted ideas into a PR in the target repo.
+
+The whole thing runs autonomously between captures and decisions. You are needed only for capture, accept/reject judgment, and PR review.
+
+---
+
+## Architecture
+
+Three tiers, each with a clean responsibility:
+
+### Tier 0 — `~/.claude/` (you-the-person)
+
+Cross-project intelligence, lives once on your Mac, applies everywhere.
+
+| Path | Role |
 |---|---|
-| `↑↓` `j` `k` | select row |
-| `tab`        | jump to next zone |
-| `g` `G`      | first / last row |
-| `enter`      | (flight) zoom into watch TUI · (await) expand · (today) open idea |
-| `a` `t` `r`  | accept / needs-more-thought / reject (await zone) |
-| `b`          | build the selected accepted idea |
-| `o`          | open idea file in `$EDITOR` |
-| `c`          | inline capture — type a title, Enter to save |
-| `:`          | run a verb (brainstorm / ship / doctor / cleanup) |
-| `p`          | cycle project filter |
-| `?`          | full keymap overlay |
-| `q` `ctrl+c` | quit |
+| `~/.claude/skills/idea-harness/SKILL.md` | The operational skill. Defines the eight-step flow (reconcile → harvest → score → brainstorm → critic → sharpen → notify → build → watch). |
+| `~/.claude/skills/idea-harness/references/` | Prompts, rubric, schema, projects.yml, per-project context. Loaded on demand by the skill. |
+| `~/.claude/skills/idea-harness/scripts/` | `harvest.py`, `brainstorm-captured.py`, `escalate-needs-detail.py`, `inflight.sh`. |
+| `~/.claude/skills/idea-harness/templates/repo/` | Drop-in templates for new projects (`.harness/config.json`, `CLAUDE.md`). |
+| `~/.claude/commands/inflight.md` | The `/inflight` slash command. Backed by `scripts/inflight.sh`. |
+| `~/.claude/plans/specs/<slug>/idea.md` | Per-idea state. Frontmatter is the only state. |
+| `~/.claude/hooks/safety-check.sh` | Global Write/Edit guard. Reads each repo's `.harness/config.json:safety` if present, no-op otherwise. |
 
-**Live behavior**
+### Tier 1 — `<repo>/.harness/` and `<repo>/.claude/` (you-in-this-repo)
 
-The dashboard refreshes from disk every second and tails active
-events.ndjson files concurrently — capturing an idea, accepting one,
-or spawning a verb shows up in the next tick without a manual
-refresh. Mutations preserve the cursor position by logical id (slug
-or runId), so pressing `a` doesn't yank your selection onto a
-neighbor.
+Per-repo machine-readable config and human-readable conventions. Stamped once when you onboard a project, edited as the project evolves.
 
-The dashboard is TTY-only. `harness --json` and `harness --ndjson`
-return a clean BAD_INPUT envelope pointing agents at `harness ideas
-list` instead.
+| Path | Role |
+|---|---|
+| `<repo>/.harness/config.json` | Repo identity, vcs, stacks, commands, evidence patterns, safety guardrails. The single machine-readable source for tools and hooks operating on this repo. |
+| `<repo>/CLAUDE.md` (or `<repo>/.claude/CLAUDE.md`) | Human-readable conventions — read at the start of every Claude session in this repo. Drop-in template provided. |
+| `<repo>/.claude/hooks/` | Optional. Long-running-agent primitives (kill-switch, steer, verify-gate, track-read, commit-on-stop) for repos where Claude sessions iterate for hours. |
+| `<repo>/.claude/agents/evaluator.md` | Optional. Fresh-context PR reviewer subagent. |
+| `<repo>/.harness/.allow-once` | Created on demand by the operator to bypass `safety.require_human_review_when_touching` for one Edit. Auto-consumed. |
 
-### Agent-friendly output
+### Tier 2 — Local execution (LaunchAgents)
 
-Every verb supports `--json` (single envelope) and `--ndjson` (event
-stream). The envelope is stable as `harness/v1`; pin it. Get every
-verb's JSON Schema with:
+The cron, all on your Mac, all native macOS. No third-party schedulers, no cloud cron, no openclaw runtime.
+
+| LaunchAgent | Cadence | What it does |
+|---|---|---|
+| `com.taylorpetrehn.idea-harness-harvest` | every **60 s** | Reads incomplete reminders from "App Ideas" via `osascript`, writes new `idea.md` files at `status: captured`, marks the source reminder complete. |
+| `com.taylorpetrehn.idea-harness-brainstorm` | every **1 hr** | If any `idea.md` has `status: captured`, spawns one autonomous `claude --print` session that runs steps 2–5 of the skill (route, score, brainstorm, critic via fresh subagent, sharpen). |
+| `com.taylorpetrehn.idea-harness-escalate` | every **10 min** | For each `idea.md` at `status: needs-detail` without an `escalated_at` timestamp, daemonizes a `claude --remote-control` session inside a pseudo-tty so it shows up on your phone, seeded with the brainstorm + open question. |
+
+---
+
+## The flow, in detail
+
+### 1. Capture (anywhere, anytime)
+
+Add to the Reminders list named **App Ideas** by any path that syncs to iCloud:
+
+- "Hey Siri, add 'X' to my App Ideas list" (iPhone, Watch, CarPlay, AirPods long-press, HomePod)
+- iOS / iPadOS / macOS Reminders app
+- Share sheet from Safari / Mail / anywhere
+
+The body of the reminder is captured too — dictate any context, constraints, or links. You'll never lose it.
+
+### 2. Harvest (≤ 60 s)
+
+`harvest.py` runs every minute via launchd. For each incomplete reminder in "App Ideas":
+
+1. Generate an 8-char hex id, slug from the title.
+2. Skip if a matching slug is already on disk (dedup by stem).
+3. Write `~/.claude/plans/specs/<slug>/idea.md` with frontmatter `status: captured`.
+4. Mark the source reminder complete (so it disappears from your list — you have proof it was tracked).
+
+Robust against Reminders.app hangs (15 s AppleScript timeout + 20 s subprocess timeout). Timeouts are soft — they just skip this tick and try again next minute.
+
+### 3. Brainstorm + critic (≤ 1 hr)
+
+`brainstorm-captured.py` runs hourly via launchd. If any captured ideas exist, spawns one `claude --print` session that:
+
+1. **Routes** each captured idea to a project via `references/projects.yml` keyword matching. Skips projects whose `references/context/<name>/product.md` is still a stub.
+2. **Scores** on five dimensions (clarity, scope, pattern, risk, autonomy → 5–15 total).
+3. **Brainstorms** following the eight-section structure in `references/brainstorm-output.md`. Reads the matched project's `product.md` + `decisions.md` as Tier 1 context, optionally reads codebase files (Tier 2, capped at 3 per idea).
+4. **Critiques** by spawning a fresh subagent (Agent tool, general-purpose) with `references/critic-rubric.md`. Subagent returns JSON to `spec-eval.json`.
+5. **Applies the verdict:**
+   - `pass` → `status: brainstormed` (waits for your accept/reject)
+   - `revise` → one revision attempt with critic feedback, then re-critique
+   - `escalate` → `status: needs-critic-review` (you see it, decide if the brainstormer was just confused)
+   - brainstorm verdict `needs-more-thought` → sharpener appends a single clarifying question as `## Open Question`, status moves to `needs-detail`
+
+Notification (`ntfy.sh/taylor-barker`) only fires if anything moved into a state you'd care about. Empty ticks are silent.
+
+### 4. Escalate to phone (≤ 10 min)
+
+`escalate-needs-detail.py` runs every 10 min. For each `needs-detail` idea without an `escalated_at` stamp:
+
+1. Mark `escalated_at: <now>` (idempotency — never spawns duplicate sessions for the same idea).
+2. Double-fork into a daemon, allocate a pseudo-tty via Python's `pty.spawn`, exec `claude --remote-control idea/<short-name>` inside it with the brainstorm + open question seeded as the first user turn.
+
+The pty is **load-bearing** — without it, Claude detects "non-TTY" and runs as `--print`, exiting immediately and never registering with Remote Control. See [Known gotchas](#known-gotchas).
+
+The session uses `--permission-mode bypassPermissions` and instructs Claude to use a single `Edit` call to update both the body and the frontmatter — avoids the double-prompt UX that `acceptEdits` produced when frontmatter changes wanted Bash.
+
+Push notification fires on your phone (Claude Code's built-in "needs a decision" trigger, requires v2.1.110+ and `agentPushNotifEnabled: true` in user settings). You tap, read, type a decision. Claude writes `## Decision`, flips `status: brainstormed`, exits. The session disappears from your phone.
+
+### 5. Decide and build (at the desk, on demand)
+
+Back at the Mac, `/inflight` shows what's brainstormed and ready for your judgment. Say "accept streamchat-drafts variant B" or similar, then "build it." The skill's step 7 spawns a builder Claude in the target repo's worktree, which reads the brainstorm body + `simplicity-rules.md` + the project's `conventions.md` from `references/context/<name>/`, implements the chosen variant on a feature branch, opens a PR, prints `PR_URL=<url>`. Status moves to `pr-open`.
+
+Step 8 watches in-flight PRs (CI, review state) and reconciles status to `shipped` when merged.
+
+---
+
+## Setting it up on a fresh Mac
+
+### Prerequisites
+
+- macOS (Apple Reminders + iCloud Drive)
+- Python 3 (preinstalled on macOS 13+)
+- [Claude Code CLI](https://code.claude.com/docs) installed and logged in (`claude /login`)
+- Claude Code **v2.1.110 or newer** (Remote Control requires it)
+- A Reminders list named exactly **App Ideas** (create one if needed)
+- iCloud sync enabled for Reminders
+
+### Step 1: Clone this repo as your launch workspace
 
 ```bash
-harness contracts --json
+git clone https://github.com/taylorpetrehn/idea-harness.git ~/Projects/idea-harness
+cd ~/Projects/idea-harness
 ```
 
-## Worktrees
+This directory becomes your Mac launch workspace. The `.claude/hooks/` here are what spawned Claude sessions inherit when they `cd` here at startup.
 
-Builds happen in a git worktree, never in your primary checkout. Default
-location: `<repo-parent>/<repo-basename>-worktrees/<branch-flat>`. So a
-build of `idea/dm-cohorts-d2e3` against the LetsBarker repo lands in
-`~/Projects/PrimaryBarker/LetsBarker-worktrees/idea-dm-cohorts-d2e3`.
-Override the parent dir with `IDEA_HARNESS_WORKTREE_DIR`.
+### Step 2: Approve the workspace (one-time)
 
-This means:
-- You can keep working in your primary checkout while a build runs.
-- Concurrent builds don't trample HEAD (each gets its own worktree).
-- Crashes leave the worktree dirty, not your repo. `harness resume <slug>`
-  picks the worktree back up where the prior session left off.
-- After a PR merges, run `harness cleanup --apply` to delete worktrees
-  for shipped ideas. Nothing's deleted automatically.
-
-> `context/product.md` and `context/decisions.md` are gitignored on purpose —
-> they describe your specific product and usually contain internal details
-> the rest of the repo doesn't need to know about. The shipped templates
-> (`*.example.md`) tell you what to put where.
-
-## Architecture at a Glance
-
-```
-TRIGGERS (manual / event / conversational)
-   ↓
-CONTROL — initializer plans the run
-   ↓
-CONTEXT — Tier 1 always, Tier 2/3 on request, with token budget
-   ↓
-EXECUTION — brainstormer produces output (fresh context per idea)
-   ↓
-VERIFICATION — deterministic schema check, then LLM critic
-   ↓
-STATE — durable artifacts in ideas/ and runs/
-   ↓
-REVIEW — Taylor reacts conversationally → accept / reject / needs-more-thought
-   ↓
-BUILD — `harness build <slug>` spawns Claude Code in the target repo, opens a PR
+```bash
+cd ~/Projects/idea-harness
+claude
+# Accept the workspace trust dialog when prompted
+# Then /quit immediately — that's the only purpose of this run
 ```
 
-See `SKILL.md` for the full design and `contracts/` for the machine-checkable
-output contracts at each handoff.
+Cron-spawned sessions auto-skip the trust dialog (non-TTY context) but the explicit one-time approval is the documented best-practice path.
 
-## File Layout
+### Step 3: Install the skill
 
-```
-idea-harness/
-  SKILL.md                          ← full design and contracts
-  README.md                         ← this file
-  ideas/<slug>.md                   ← work product, one per idea
-  context/
-    product.example.md              ← template; copy to product.md (gitignored)
-    decisions.example.md            ← template; copy to decisions.md (gitignored)
-  contracts/
-    brainstorm-output.md            ← required brainstorm structure
-    critic-rubric.md                ← critic's pass/fail criteria
-    context-budget.md               ← Tier 1/2/3 + token caps
-    handoff-to-build.md             ← what idea-to-pr expects
-  references/
-    idea-schema.md                  ← idea file frontmatter + body
-  bin/
-    harness.ts                      ← single binary entrypoint (commander)
-  scripts/
-    commands/                       ← one file per verb, each exporting `run(args, out)`
-      capture.ts                    ← add an idea (text | --from reminders|stdin)
-      brainstorm.ts                 ← orchestrator (capture → review)
-      ideas.ts                      ← list / show / waiting
-      review.ts                     ← next / in-flight / accept / reject / thought / set
-      ship.ts                       ← do the next obvious thing
-      build.ts                      ← start / resume / watch / status
-      cleanup.ts                    ← remove worktrees for shipped ideas
-      inspect.ts                    ← view recent runs + metrics
-      doctor.ts                     ← env health check
-      completions.ts                ← bash/zsh/fish completion script
-      contracts.ts                  ← emit JSON Schema for every verb
-    agents/
-      initializer.ts                ← L2: plans the run
-      harvester.ts                  ← Reminders → raw idea files
-      brainstormer.ts               ← L4: brainstorms one idea
-      critic.ts                     ← L5: gates output (qualitative)
-      builder.ts                    ← L6: spawns claude in worktree, opens PR
-    lib/
-      output.ts                     ← pretty / --json / --ndjson abstraction
-      contracts.ts                  ← Zod schemas + verb-contract registry
-      ideas.ts                      ← idea file read/write
-      runs.ts                       ← run lifecycle
-      context.ts                    ← Tier 1/2/3 loading
-      schema.ts                     ← deterministic brainstorm schema check
-      worktree.ts                   ← git worktree lifecycle for builds
-      graduator.ts                  ← shared worker for build/ship/resume
-      slug.ts                       ← permissive slug matching
-      llm.ts                        ← model adapters
-      reminders.ts                  ← Reminders adapter (osascript)
-      loops.ts                      ← loop detection
-      projects.ts                   ← project routing
-      budgets.ts                    ← token budget policy
-      text.ts                       ← slugify, fuzzy match
-      log.ts                        ← stderr logger
-      metrics.ts                    ← rolling counters
-  runs/                             ← per-run artifacts (auto-generated)
-  state/                            ← rolling metrics (auto-generated)
+The skill itself ships at `~/.claude/skills/idea-harness/`. If you maintain `~/.claude/` in version control, the skill is already there. If not, copy or symlink it from your authoritative source — the skill is currently authored in this repo's owner's dotfiles.
+
+```bash
+mkdir -p ~/.claude/skills
+# Either copy or symlink:
+# cp -R <source>/idea-harness ~/.claude/skills/idea-harness
+# ln -s <source>/idea-harness ~/.claude/skills/idea-harness
 ```
 
-## What's Wired Up
+### Step 4: Install the global safety hook
 
-The scaffold ships with all adapters fully implemented — `harness brainstorm --dry`
-runs end-to-end without code changes. What you do still need is the
-*environment* the harness runs in:
-
-- `lib/reminders.ts` — talks to Apple Reminders via `osascript`. Set
-  `IDEA_HARNESS_REMINDERS=dry` to disable (used in tests / non-mac envs).
-- `lib/projects.ts` — parses `~/.openclaw/workspace-bonnie/skills/idea-to-pr/references/projects.yml`
-  by default. Override the path with `IDEA_HARNESS_PROJECTS_YML`.
-- `lib/context.ts` — Tier 2 codebase reads resolve to the project's
-  `local_path` from `projects.yml`. Override per-project with
-  `IDEA_HARNESS_REPO_LETSBARKER`, `IDEA_HARNESS_REPO_CLAWD`, etc.
-- `lib/llm.ts` — three transports, picked at runtime:
-  - **SDK** when `ANTHROPIC_API_KEY` is set — uses `@anthropic-ai/sdk`
-    (an *optional* dependency; install with `npm install` since it's
-    declared in `optionalDependencies`).
-  - **Claude CLI** otherwise — shells out to `claude --print --model <m>
-    --system-prompt <s> --output-format json`, using whatever auth the
-    CLI already has (subscription / OAuth / keychain). Force this mode
-    with `IDEA_HARNESS_LLM=cli`. Token counts are parsed from the JSON.
-  - **Offline** stub via `IDEA_HARNESS_LLM=offline` — deterministic
-    output for tests.
-
-  Model IDs are env-configurable: `IDEA_HARNESS_BRAINSTORMER_MODEL`,
-  `IDEA_HARNESS_CRITIC_MODEL`. CLI binary path:
-  `IDEA_HARNESS_CLAUDE_BIN`. Per-call timeout: `IDEA_HARNESS_CLAUDE_TIMEOUT_MS`
-  (default 300000).
-- `agents/brainstormer.ts` — round-trips Tier 2 context_request emissions
-  back to the model up to `IDEA_HARNESS_TIER2_MAX_REQUESTS` (default 3).
-
-For real runs: set `ANTHROPIC_API_KEY`, ensure the Reminders app has a list
-called "App Ideas", then `harness brainstorm`.
-
-## Environment Variables
-
-| Var | Purpose | Default |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | API key — picks the SDK transport when set | — (CLI transport) |
-| `IDEA_HARNESS_LLM` | `sdk` / `cli` / `offline` — force a transport | auto |
-| `IDEA_HARNESS_CLAUDE_BIN` | path to the `claude` binary | resolved on PATH |
-| `IDEA_HARNESS_CLAUDE_TIMEOUT_MS` | per-CLI-call timeout | 300000 |
-| `IDEA_HARNESS_BUILDER` | `live` / `offline` / `dry` — builder mode | `live` |
-| `IDEA_HARNESS_BUILDER_TIMEOUT_MS` | builder session timeout | 1800000 (30 min) |
-| `IDEA_HARNESS_WORKTREE_DIR` | parent dir for build worktrees | `<repo-parent>/<repo>-worktrees` |
-| `IDEA_HARNESS_REMINDERS` | `dry` to skip Apple Reminders | live on macOS |
-| `IDEA_HARNESS_BRAINSTORMER_MODEL` | brainstormer model id | `claude-opus-4-7` |
-| `IDEA_HARNESS_CRITIC_MODEL` | critic model id | `claude-haiku-4-5-20251001` |
-| `IDEA_HARNESS_PROJECTS_YML` | path to `projects.yml` | idea-to-pr default |
-| `IDEA_HARNESS_REPO_<KEY>` | repo path override per project | from `projects.yml` |
-| `IDEA_HARNESS_PER_IDEA_TARGET` | soft token target per brainstorm | 10000 |
-| `IDEA_HARNESS_PER_RUN_CAP` | hard run-level token cap | 100000 |
-| `IDEA_HARNESS_AUTO_FLOW` | when `true`, the brainstormer auto-promotes high-confidence accept/reject verdicts past the human gate (see "Auto-flow" below) | `false` |
-| `IDEA_HARNESS_AUTO_SHARPEN` | when `true`, `needs-more-thought` brainstorms trigger the sharpener (see "Scope sharpener" below) | `false` |
-| `IDEA_HARNESS_AUTO_FOLLOW` | when `true`, `harness follow` / `watch-prs` actually spawn Claude and run `gh pr merge`; without it both verbs run as dry probes (see "PR follow-through" below) | `false` |
-| `IDEA_HARNESS_SLACK_CHANNEL` / `IDEA_HARNESS_SLACK_CAPTURE_EMOJI` / `IDEA_HARNESS_SLACK_LOOKBACK_HOURS` | Slack capture source — channel id, trigger emoji, lookback window | required / `star` / `24` |
-| `SLACK_BOT_TOKEN` | bearer token for the Slack capture source | — |
-| `IDEA_HARNESS_EMAIL_ENDPOINT` / `IDEA_HARNESS_EMAIL_TOKEN` | JSON-over-HTTPS inbox endpoint + optional bearer for the email capture source | — |
-| `IDEA_HARNESS_SYNTHESIS_THRESHOLD` | similarity threshold (0-1) for cross-idea synthesis duplicate detection | `0.7` |
-| `LOG_LEVEL` | `silent`, `error`, `warn`, `info`, `debug` | `info` |
-
-## Auto-flow
-
-After each brainstorm commit, the harness checks the verdict:
-
-- `Recommended action: accept` + `Confidence: high` → idea status flips
-  straight to `accepted` (skipping AWAITING YOU).
-- `Recommended action: reject` + `Confidence: high` → idea status flips
-  straight to `rejected`.
-- Any other combination (medium/low confidence, `needs-more-thought`)
-  stays at `brainstormed` for human review — no behavior change.
-
-Auto-flow is **opt-in**: set `IDEA_HARNESS_AUTO_FLOW=true` to enable.
-Default is off. Every auto-decision is journaled (`idea.auto_flowed`)
-and reversible — `harness review accept|reject|needs-more-thought
-<slug>` overrides at any time, and the journal preserves both decisions.
-
-The dashboard surfaces auto-flow visibly:
-
-- TODAY trail glyph: `⚡` injected before the accepted/rejected
-  glyph (e.g., `↓💭⚡✓` for "captured, brainstormed,
-  auto-accepted").
-- NEXT bar: `⚡` prefix on auto-flowed picks.
-- AWAITING YOU empty state: when auto-flow has handled ideas, the
-  inbox-zero message swaps to "auto-flow handled N ideas — press
-  [enter] to see TODAY".
-
-## Scope sharpener
-
-When the brainstormer commits a `needs-more-thought` verdict and
-`IDEA_HARNESS_AUTO_SHARPEN=true`, the harness invokes a small follow-up
-agent that:
-
-- Reads the brainstorm's `Risks and open questions` + `Why` lines.
-- Asks the LLM (cheap critic-class transport) for the SINGLE
-  highest-leverage clarifying question.
-- Appends an `## Open Question` section to the idea body.
-- Best-effort writes the question back to the originating capture
-  (Apple Reminders → appended to the reminder body) so the user can
-  answer it where they brain-dumped the idea.
-
-The idea status stays at `brainstormed` — the sharpener never
-auto-decides anything. To answer the question:
-
-```
-harness reply <slug> "your answer here"
+```bash
+cp ~/.claude/skills/idea-harness/templates/repo/.claude/hooks/safety-check.sh ~/.claude/hooks/safety-check.sh 2>/dev/null \
+  || cp ~/Projects/idea-harness/.claude/hooks/safety-check.sh ~/.claude/hooks/safety-check.sh
+chmod +x ~/.claude/hooks/safety-check.sh
 ```
 
-`reply` appends a `### Reply` block under the most recent Open
-Question, bumps `loop_count`, and journals `idea.replied`. Re-run
-`harness brainstorm` (or wait for the next pass) and the brainstormer
-will see the answer in the body and produce a fresh verdict.
+Add it to `~/.claude/settings.json` under `hooks.PreToolUse`:
 
-The dashboard surfaces the sharpener via:
-
-- `❓` row prefix + trail glyph in TODAY (e.g., `↓💭❓`) for ideas
-  with a pending question.
-- AWAITING YOU detail pane shows the question text + the exact
-  `harness reply` invocation to copy.
-
-The sharpener is opt-in. Default off. Failure (LLM error, write-back
-failure) is logged and never breaks the brainstorm commit.
-
-## PR follow-through
-
-Phase 3. Once a build opens a PR, `harness follow [<slug>]` (one-shot)
-or `harness watch-prs` (daemon, default 5-minute interval) polls the
-PR with `gh` and reacts:
-
-- CI failed → idea status flips to `ci-failed`, then Claude Code is
-  spawned in the worktree with the failing log + "fix this. test
-  locally. push."
-- Reviewer requested changes → status flips to
-  `review-changes-requested`, Claude Code spawned with the comment
-  thread + diff + "address this comment."
-- CI green + approved + mergeable → `gh pr merge --merge` →
-  status: `merged`.
-- CI pending → status: `ci-running`. No spawn, no merge.
-
-Both verbs are gated by `IDEA_HARNESS_AUTO_FOLLOW=true`. Without it
-they run in **dry mode**: poll-and-report only, no spawn or merge.
-Default off keeps the same posture as the auto-flow / sharpener
-flags — opt in when you want hands-off operation.
-
-The dashboard surfaces the new states with their own glyphs:
-
-- `⚙` (yellow) ci-running, `⚙` (red) ci-failed
-- `✎` review-changes-requested
-- `✅` merged
-
-A typical full-loop trail might read `↓💭⚡✓◆★⚙✅` —
-captured, brainstormed, auto-flow-accepted, build started, PR open,
-CI ran, merged.
-
-A small `lib/github.ts` wrapper (around `gh pr view / pr checks /
-pr merge / run view`) is the single pinch point for GitHub access.
-Tests stub it via `setGhRunner` and stub the Claude spawn via the
-`spawnClaude` opt — `_smoke_pr_followthrough.ts` covers all five
-state-machine paths without touching the network.
-
-Webhook receivers were called out as a follow-on in the original
-roadmap; this poll-based daemon is the first cut.
-
-## Compounding extras (Phase 4)
-
-Three smaller items that don't enable each other but each give real
-lift once the core auto-flow / sharpener / PR-followthrough loop is
-running.
-
-### Daily digest
-
-```
-harness digest [--date YYYY-MM-DD]
+```json
+{
+  "matcher": "Write|Edit",
+  "hooks": [
+    { "type": "command", "command": "$HOME/.claude/hooks/safety-check.sh" }
+  ]
+}
 ```
 
-Reads the journal and writes `runs/digest-<date>.md` summarizing
-what got captured / brainstormed / accepted / rejected /
-auto-flowed / sharpened / shipped on that UTC day. Idempotent —
-re-running overwrites the file. Wire to cron for scheduled
-delivery.
+The hook is a **no-op** if a project has no `.harness/config.json` or no `safety` block. Safe to install globally.
 
-### Multi-source capture: Slack + email
+### Step 5: Install the LaunchAgents
 
-Two new sources behind the existing `lib/sources/` registry:
+```bash
+mkdir -p ~/.claude/skills/idea-harness/logs
+mkdir -p ~/.claude/plans/specs
+mkdir -p ~/Library/LaunchAgents
 
-- **Slack** — `harness capture --from slack` polls a channel for
-  messages tagged with a reaction emoji (default ⭐), turns each
-  into a raw idea, and reacts back with `:eyes:` to dedupe across
-  polls. Needs `SLACK_BOT_TOKEN` and `IDEA_HARNESS_SLACK_CHANNEL`.
-- **Email** — `harness capture --from email` polls a JSON-over-HTTPS
-  inbox endpoint (the small adapter you'd put in front of IMAP
-  yourself, or a Cloudflare Email Worker / SES Lambda). DELETEs the
-  message ID after consumption.
+# Each plist (harvest, brainstorm, escalate). Replace `taylorpetrehn` in
+# the Label and HOME values with your username.
+for name in harvest brainstorm escalate; do
+  cp templates/launchagents/com.taylorpetrehn.idea-harness-${name}.plist \
+     ~/Library/LaunchAgents/
+  launchctl load ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-${name}.plist
+done
 
-Both sources use only built-in `fetch` — no new SDK deps. Tests
-inject custom fetchers via `setSlackFetch` / `setEmailFetch`.
+launchctl list | grep idea-harness  # should show all three
+```
 
-### Cross-idea synthesis
+(If `templates/launchagents/` doesn't exist in your clone, the canonical plists live at `~/Library/LaunchAgents/` on the original machine; copy them into this repo's `templates/launchagents/` to bootstrap a new Mac.)
 
-`scripts/lib/synthesis.ts` exposes `findSimilar(title, body, ideas,
-opts?, excludeSlug?)`. Cheap-and-local Jaccard over normalized
-word-bigrams (no LLM call, no embedding model) flags candidates
-with similarity ≥ `IDEA_HARNESS_SYNTHESIS_THRESHOLD` (default 0.7)
-so the brainstormer can prefer "this overlaps with `<slug>` —
-bundle / supersede" over a blank-slate brainstorm. The function is
-deliberately library-only; callers (the dashboard NEXT bar, the
-brainstormer Tier 1 prompt) opt in.
+### Step 6: Grant Reminders automation permission
 
-## Why This Shape
+The first time `harvest.py` runs, macOS may pop an Automation prompt asking if `python3` (or `osascript`) can control Reminders. Approve it. If you missed the prompt, grant it manually:
 
-Six principles drove the design:
+**System Settings → Privacy & Security → Automation → python3 → Reminders** (toggle on).
 
-1. **The harness is the product, not the model.** Swapping Claude versions
-   should change quality, not break the system.
-2. **Subtraction over addition.** Each agent sees minimum context.
-3. **Fresh context beats compaction.** Each idea gets a clean window.
-4. **Durable artifacts over conversation history.** Files are the truth.
-5. **Human at the right gate, exactly once.** Conversational review.
-6. **Honesty over enthusiasm.** Critic explicitly checks for hand-wavy output.
+### Step 7: Smoke test
+
+```bash
+# Dictate "Hey Siri, add 'smoke test' to App Ideas"
+# Wait 60 s
+~/.claude/skills/idea-harness/scripts/inflight.sh
+# Should show one captured idea
+```
+
+### Step 8: Configure push notifications
+
+In Claude Code: `/config` → enable **"Push when Claude decides"**. You'll need the Claude mobile app installed and signed in to the same account as `claude /login`.
+
+You're set. Capture an idea on the way home; come back to a brainstormed queue.
+
+---
+
+## Onboarding a new project
+
+Onboarding means: **stamp `.harness/config.json` + a `CLAUDE.md` template into the repo, and add the project to the routing registry.**
+
+### Step 1: Add the project to the registry
+
+Edit `~/.claude/skills/idea-harness/references/projects.yml` and add a new entry:
+
+```yaml
+projects:
+  myproject:
+    github_repo: "you/myproject"
+    local_path: "~/Projects/myproject"
+    base_branch: "main"
+    bot_name: "you"
+    bot_email: "you@users.noreply.github.com"
+    bot_pat_file: "~/.secrets/myproject-bot-pat"
+    spec_location: "specs/{date}-{slug}/spec.md"
+    worktree_pattern: "../myproject-wt-{slug}"
+    uses_worktrees: true
+    conventions_path: "references/context/myproject/conventions.md"
+    test_command: "npm test"
+    keywords:
+      - keyword1
+      - keyword2
+      # …
+```
+
+Pick keywords carefully — they're how the brainstormer auto-routes captured ideas to this project. If multiple projects match, highest hit count wins; if zero match, the idea goes to `needs-detail` with a "which project?" question.
+
+### Step 2: Create per-project context
+
+```bash
+mkdir -p ~/.claude/skills/idea-harness/references/context/myproject
+cd ~/.claude/skills/idea-harness/references/context/myproject
+
+# Three files. Bigger projects warrant more detail; keep each ~1500 tokens.
+touch product.md decisions.md conventions.md
+```
+
+- **`product.md`** — what the product is, the stack, surface areas, current focus, how to think about ideas in this context. Read by the brainstormer as Tier 1 on every brainstorm. **Until this contains a real description (not the literal word "STUB"), the brainstormer routes ideas for this project to `needs-detail`.**
+- **`decisions.md`** — append-only ledger of conscious non-choices ("we don't do X because Y"). Lets the brainstormer reject ideas that re-litigate settled questions.
+- **`conventions.md`** — repo coding conventions, injected into builder spawn prompts.
+
+Use `~/.claude/skills/idea-harness/references/context/letsbarker/` as a reference shape.
+
+### Step 3: Add the project to `brainstorm-captured.py`'s `PROJECT_PATHS`
+
+Open `~/.claude/skills/idea-harness/scripts/brainstorm-captured.py`, find `PROJECT_PATHS`, and add the repo's `local_path`. The brainstormer needs `--add-dir` access to read codebase files for Tier 2 footprint checks.
+
+### Step 4: Stamp the repo
+
+```bash
+cd ~/Projects/myproject
+cp -r ~/.claude/skills/idea-harness/templates/repo/.harness .
+cp ~/.claude/skills/idea-harness/templates/repo/CLAUDE.md .
+```
+
+### Step 5: Edit `.harness/config.json`
+
+The template is filled in for LetsBarker — change everything that's project-specific. The `CLAUDE.md` you just dropped contains a "First-time setup" callout listing the fields to update.
+
+Required fields (everything else is optional):
+
+- `name` — must match the key in `projects.yml`
+- `identity.github_repo` — `owner/name` form
+- `identity.local_path` — absolute path
+- `vcs.base_branch` — typically `main`, sometimes `develop` / `preview`
+- `commands.smoke` — must be cheap (≤ 1 s); used by long-running sessions to confirm a clean tree
+- `commands.test_*` and `commands.lint` — actual shell commands for this repo
+- `evidence.evaluators[]` — one entry per stack with `key`, `command`, `when_touched` glob
+
+Example for a simple Python project:
+
+```json
+{
+  "name": "myproject",
+  "identity": { "github_repo": "you/myproject", "local_path": "~/Projects/myproject" },
+  "vcs": { "base_branch": "main", "branch_pattern": "idea/{slug-stub}-{id4}", "uses_worktrees": false,
+           "bot": { "name": "you", "email": "you@users.noreply.github.com",
+                    "pat_file": "~/.secrets/myproject-bot-pat" } },
+  "stacks": ["python"],
+  "commands": {
+    "smoke": "python -c 'import myproject; print(\"ok\")'",
+    "test":  "pytest",
+    "lint":  "ruff check .",
+    "dev_server": "python -m myproject"
+  },
+  "evidence": {
+    "results_file": ".harness/results.json",
+    "evidence_patterns": ["tmp/screenshots/**/*.png", ".harness/results-*.json"],
+    "evaluators": [
+      { "key": "python", "command": "pytest --json-report --json-report-file=.harness/results-python.json",
+        "when_touched": ["src/**", "tests/**"] }
+    ]
+  }
+}
+```
+
+`safety` is entirely optional — leave it out unless you have specific guardrails to enforce. A good first list:
+
+```json
+"safety": {
+  "must_not_touch": [".env", "secrets/**"],
+  "never_force_push_branches": ["main"]
+}
+```
+
+### Step 6: Verify
+
+Run `claude` in the new repo once interactively to approve workspace trust:
+
+```bash
+cd ~/Projects/myproject
+claude
+# /quit immediately
+```
+
+Capture a test idea via Siri ("add 'test for myproject feature' to App Ideas"). Within ~60 s + 1 hr, it should land in `/inflight` routed to `myproject`. If it routes to `needs-detail` with "wrong project" or "stubbed product context," your keywords or `product.md` need work.
+
+---
+
+## Onboarding an existing project
+
+Most projects you're considering already have *some* `.claude/` content (CLAUDE.md, hooks, agents, settings.json) and possibly conflicting tooling. Walk through this list:
+
+### 1. Adopt without conflict
+
+```bash
+cd ~/Projects/existing-project
+mkdir -p .harness
+cp ~/.claude/skills/idea-harness/templates/repo/.harness/config.json .harness/config.json
+```
+
+`.harness/` is new — won't collide with anything. **Don't** overwrite an existing `CLAUDE.md`. Instead, append a section pointing at the harness:
+
+```markdown
+## Harness conventions
+
+This repo is wired into the idea-harness pipeline. The machine-readable shape lives at `.harness/config.json`. When working in this repo, read it at the start of every session along with whatever conventions you usually follow here.
+
+If you're an autonomous agent spawned by the harness's escalate or build flow:
+- Read `.harness/config.json` for stacks, commands, evidence patterns, safety guardrails.
+- Read `~/.claude/skills/idea-harness/references/context/{name}/conventions.md` for project conventions, where `{name}` is `.harness/config.json:name`.
+- Use the Edit tool for `idea.md` modifications when invoked via escalate.
+```
+
+### 2. Reconcile hooks
+
+If the repo already has `.claude/hooks/`, you have two cohabitation options:
+
+- **Keep what's there**, add the harness primitives only if the existing hooks are absent or weaker. The cwc-long-running-agents primitives (kill-switch, steer, verify-gate, track-read, commit-on-stop) compose cleanly with most other hook setups.
+- **Layer them** by including both in `.claude/settings.json`'s `PreToolUse` array. Hooks run in order; first one that returns `block` wins.
+
+### 3. Add the project to the registry + brainstormer access list
+
+Same as for new projects: edit `projects.yml`, create `references/context/<name>/{product,decisions,conventions}.md`, add the local path to `brainstorm-captured.py`'s `PROJECT_PATHS`. **Don't stub the context files** — write real content immediately, otherwise the brainstormer routes every idea to `needs-detail`.
+
+### 4. Edit `.harness/config.json`
+
+Change everything to match the existing repo. Pay particular attention to:
+
+- `vcs.base_branch` — match the repo's actual default branch (often `main`, sometimes `develop`/`preview`/`trunk`).
+- `vcs.uses_worktrees` — set to `true` only if you have a worktree workflow established. Otherwise builds happen on a feature branch in the main checkout.
+- `commands.smoke` — pick something genuinely cheap that exercises the build system (Rails: `bin/rails runner 'puts 1'`; Node: `node -e 'console.log(1)'`; Python: `python -c 'print(1)'`). Long-running sessions run it on every restart.
+- `safety.must_not_touch` — be liberal here for repos with any production exposure. The hook is a no-op if the field is empty, but it's free protection if you fill it in.
+
+### 5. Verify
+
+Same as for new projects. Capture a test idea, watch it route correctly.
+
+---
+
+## Operations
+
+### What's running?
+
+```bash
+# All idea-harness LaunchAgents
+launchctl list | grep idea-harness
+
+# Their cadences
+for plist in ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-*.plist; do
+  label=$(plutil -extract Label raw "$plist")
+  interval=$(plutil -extract StartInterval raw "$plist")
+  printf "  %-50s every %ss\n" "$label" "$interval"
+done
+
+# In-flight ideas
+~/.claude/skills/idea-harness/scripts/inflight.sh
+# or, from any Claude Code session:
+/inflight
+```
+
+### Tail the logs
+
+```bash
+# Capture (most-frequent, most-noisy)
+tail -f ~/.claude/skills/idea-harness/logs/harvest.log
+
+# Brainstorm (one entry per hour-tick where work happened)
+tail -f ~/.claude/skills/idea-harness/logs/brainstorm.log
+
+# Escalate (one entry per needs-detail spawn)
+tail -f ~/.claude/skills/idea-harness/logs/escalate.log
+
+# Per-idea escalation log (for the spawned RC session)
+tail -f ~/.claude/plans/specs/<slug>/.escalation.log
+```
+
+### Force a tick now (don't wait for the cadence)
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.taylorpetrehn.idea-harness-harvest
+launchctl kickstart -k gui/$(id -u)/com.taylorpetrehn.idea-harness-brainstorm
+launchctl kickstart -k gui/$(id -u)/com.taylorpetrehn.idea-harness-escalate
+```
+
+### Disable / re-enable
+
+```bash
+# Temporary off (until reload or reboot)
+launchctl unload ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-harvest.plist
+
+# Permanent off (file removed)
+launchctl unload ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-harvest.plist
+rm ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-harvest.plist
+
+# Re-enable
+launchctl load ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-harvest.plist
+```
+
+Disable all three to fully pause the pipeline; capture-stop without affecting reminders. Re-enable in any order.
+
+### Override or pause for a single idea
+
+If the harness is going wild on a single idea (looping, mis-routing, etc.), edit its `idea.md` frontmatter directly:
+
+```yaml
+status: rejected   # take it out of every flow
+# or
+status: needs-detail
+escalated_at: 2099-01-01T00:00:00Z   # arbitrary far-future timestamp
+                                      # ⇒ never re-escalates
+```
+
+### Manual escalate of a single idea
+
+```bash
+# Clear the escalated_at marker, then run the script
+python3 - <<'PY'
+import re
+from pathlib import Path
+slug = "your-slug-here"
+p = Path.home() / f".claude/plans/specs/{slug}/idea.md"
+text = p.read_text()
+text = re.sub(r"^escalated_at:.*$", "escalated_at: ~", text, count=1, flags=re.MULTILINE)
+p.write_text(text)
+PY
+~/.claude/skills/idea-harness/scripts/escalate-needs-detail.py
+```
+
+### Manual harvest of a Reminder
+
+```bash
+python3 ~/.claude/skills/idea-harness/scripts/harvest.py
+# add --dry-run to preview without writing
+```
+
+### Operator controls (per-repo, when a long-running session is active)
+
+These come from the cwc-long-running-agents primitives in `.claude/hooks/`:
+
+| Action | Command |
+|---|---|
+| Halt the agent immediately | `touch AGENT_STOP` (in repo root) |
+| Resume | `rm AGENT_STOP` |
+| Steer the agent mid-run | `echo "your steering note" > STEER.md` (surfaced once, then auto-cleared) |
+| Bypass `safety.require_human_review` once | `mkdir -p .harness && touch .harness/.allow-once` |
+
+---
+
+## Reference
+
+### Frontmatter schema (idea.md)
+
+```yaml
+---
+id: <8-char hex>                                # generated at harvest
+title: "<verbatim from source>"
+slug: <kebab-title>-<id-prefix>                 # title up to 50 chars + 4-char hex
+status: captured                                # see status flow below
+source: reminders | conversation | feedback | coding
+project: <name from projects.yml> | ~           # null until routed
+score: <int 5-15> | ~                           # set at score+route
+captured_at: <ISO 8601 UTC>
+brainstormed_at: <ISO 8601> | ~
+decided_at: <ISO 8601> | ~
+critic_verdict: pass | revise | escalate | ~
+github_issue: <url> | ~
+github_pr: <url> | ~
+loop_count: <int>                               # # of needs-more-thought cycles
+escalated_at: <ISO 8601> | ~                    # set when RC session spawned
+last_touched: <ISO 8601 UTC>                    # bumped on any change
+---
+```
+
+### Status flow
+
+```
+                 [harvest]
+                    ↓
+                 captured
+                    ↓ [brainstorm cron]
+                    ↓ [route + score + brainstorm + critic]
+              brainstormed ─────► needs-critic-review
+                    ↓
+            [Taylor reacts]
+            ↓       ↓        ↓
+        accepted  rejected  needs-detail (loop_count++)
+            ↓                    ↓
+         [build]            [escalate cron]
+            ↓                    ↓
+         building              Claude RC on phone
+            ↓                    ↓
+         pr-open              ## Decision written
+            ↓ [PR merged]    ↓ status → brainstormed
+         shipped
+```
+
+### `.harness/config.json` schema
+
+```json
+{
+  "name": "<project-name>",                      // required, matches projects.yml key
+  "identity": {
+    "github_repo": "owner/name",                 // required
+    "local_path": "~/path/to/repo"               // required
+  },
+  "vcs": {
+    "base_branch": "main",                       // required
+    "branch_pattern": "idea/{slug-stub}-{id4}",  // required
+    "uses_worktrees": true,                      // required (boolean)
+    "worktree_pattern": "../repo-wt-{slug}",     // required if uses_worktrees
+    "bot": {
+      "name": "...", "email": "...",             // required
+      "pat_file": "~/.secrets/foo-pat"           // required if pushing as bot
+    }
+  },
+  "stacks": ["rails", "expo", "vite"],           // required, declared not detected
+  "commands": {
+    "smoke": "...",                              // required, cheap (≤ 1 s)
+    "test_<stack>": "...",                       // one per stack
+    "lint": "...",                               // optional but recommended
+    "dev_server": "..."                          // optional
+  },
+  "evidence": {
+    "results_file": ".harness/results.json",     // path verify-gate watches
+    "evidence_patterns": ["tmp/**/*.png", "..."], // what counts as proof
+    "evaluators": [
+      { "key": "<stack>", "command": "...",
+        "when_touched": ["src/**", "..."] }
+    ]
+  },
+  "safety": {                                    // entirely optional
+    "must_not_touch": ["..."],                   // hard block at Write/Edit hook
+    "require_human_review_when_touching": ["..."], // soft block; bypass with .allow-once
+    "never_force_push_branches": ["main"],       // declarative; enforced by builder spawn
+    "always_label_pr": ["agent:needs-review"]    // declarative; enforced by builder spawn
+  }
+}
+```
+
+### File-system overview
+
+```
+~/.claude/                                       (Tier 0 — cross-project)
+├── skills/idea-harness/
+│   ├── SKILL.md                                 ← operational doc
+│   ├── references/
+│   │   ├── projects.yml                         ← project routing registry
+│   │   ├── brainstorm-output.md                 ← brainstormer contract
+│   │   ├── critic-rubric.md                     ← critic's 8 checks
+│   │   ├── handoff-to-build.md                  ← what an accepted idea must contain
+│   │   ├── context-budget.md                    ← Tier 1/2/3 token caps
+│   │   ├── simplicity-rules.md                  ← injected into builder spawns
+│   │   ├── branch-hygiene.md                    ← branch + PR rules
+│   │   ├── idea-schema.md                       ← idea.md frontmatter spec
+│   │   └── context/<project>/{product,decisions,conventions}.md
+│   ├── scripts/
+│   │   ├── harvest.py                           ← Reminders → idea.md
+│   │   ├── brainstorm-captured.py               ← captured → brainstormed
+│   │   ├── escalate-needs-detail.py             ← needs-detail → phone (pty.spawn)
+│   │   └── inflight.sh                          ← /inflight slash command backend
+│   └── templates/repo/                          ← drop-in for new projects
+│       ├── .harness/config.json
+│       └── CLAUDE.md
+├── commands/inflight.md                         ← /inflight definition
+├── plans/specs/<slug>/idea.md                   ← per-idea state
+└── hooks/safety-check.sh                        ← global Write/Edit guard
+
+~/Library/LaunchAgents/                          (Tier 2 — execution)
+├── com.taylorpetrehn.idea-harness-harvest.plist     (60 s)
+├── com.taylorpetrehn.idea-harness-brainstorm.plist  (1 hr)
+└── com.taylorpetrehn.idea-harness-escalate.plist    (10 min)
+
+~/Projects/idea-harness/                         (this repo, Mac launch workspace)
+├── README.md                                    ← what you're reading
+├── CLAUDE.md                                    ← conventions for spawned sessions here
+└── .claude/
+    ├── settings.json                            ← hooks for sessions launched here
+    ├── hooks/                                   ← cwc primitives
+    │   ├── kill-switch.sh
+    │   ├── steer.sh
+    │   ├── verify-gate.sh
+    │   ├── track-read.sh
+    │   └── commit-on-stop.sh
+    └── agents/evaluator.md                      ← fresh-context PR reviewer
+
+<your-target-repos>/                             (Tier 1 — onboarded projects)
+├── .harness/config.json                         ← machine-readable shape
+├── CLAUDE.md (or .claude/CLAUDE.md)             ← human-readable conventions
+└── .claude/                                     ← optional, hooks/agents per repo
+```
+
+---
+
+## Known gotchas
+
+| Gotcha | Fix |
+|---|---|
+| **Reminders.app hangs occasionally** (returns AppleEvent timeout -1712). Symptom: harvester logs "no incomplete reminders" repeatedly even when reminders exist. | Quit and relaunch Reminders.app, wait ~8 s for iCloud sync to settle. The harvester has 15 s/20 s timeouts; it'll recover automatically once Reminders responds again. |
+| **Cron-spawned `claude --remote-control` exits immediately**, never appears on phone. | The session needs a pseudo-tty. The `escalate-needs-detail.py` script handles this via Python's `pty.spawn` inside a double-forked daemon. The macOS `script -q /dev/null` wrapper does NOT work in launchd context (no controlling tty in the parent). |
+| **Double permission prompts when locking in a decision on phone.** | The escalate script uses `--permission-mode bypassPermissions` and instructs Claude to use a single Edit-tool call (not Bash sed). If you tweak the seed prompt, keep these constraints. |
+| **`harvest.py` writes "missing value" in the body section.** | AppleScript returns the literal string "missing value" when a reminder has no body. The current script filters this out. If you see it appearing, you're on an old version. |
+| **`status: needs-detail` idea won't re-escalate after you clear it.** | The `escalated_at` field is the dedup marker. Clear it (set to `~`) and the next escalate tick will spawn a fresh session. |
+| **Brainstorm cron fires but does nothing.** | If no `idea.md` has `status: captured`, the script silently exits. Check `/inflight`. |
+| **iOS Claude app shows nothing.** | (1) Confirm `claude --version` ≥ 2.1.110 on Mac. (2) `/config` → "Push when Claude decides" must be on. (3) Mobile app must be signed in to the same claude.ai account as `claude /login` on Mac. (4) The Mac must stay online (RC has a 10-min network timeout). |
+| **TCC Automation prompt for python3 → Reminders.** | First-run prompt; if missed, grant via System Settings → Privacy & Security → Automation → python3 → Reminders. |
+| **Workspace trust dialog blocks cron.** | Auto-skipped in non-TTY contexts (`-p`/`--print` mode or redirected stdout). For long-running interactive sessions, run `claude` once interactively in the dir to pre-approve. |
+
+---
+
+## Archive (v2.0.0-alpha)
+
+The earlier standalone Node CLI (with the Ink dashboard, `harness brainstorm` / `harness ship` / `harness build` verbs, an `ideas/` folder under this repo, contracts/agents in TypeScript) was archived **2026-05-07** at tag `archive/v2-alpha`.
+
+**Why retired:** consolidated three parallel systems (this CLI, the openclaw `idea-pipeline` skill, and native `shape-spec`/`write-spec`) onto one. The brainstorm/critic IP from the CLI was ported into the skill; the openclaw `simplicity-rules.md`, `projects.yml`, and `branch-hygiene.md` were ported alongside; the Ink dashboard, runs ledger, contracts package, and global npm-linked binary were retired.
+
+**To restore for reference:**
+
+```bash
+cd ~/Projects/idea-harness
+git checkout archive/v2-alpha
+# poke around. /inflight on the new system still works in parallel.
+git checkout main   # back to the new world
+```
+
+The tag is on origin. The CLI binary was `npm unlink`-ed; restoring the binary requires `npm install && npm link` from the archived state.
+
+---
+
+## License
+
+MIT (the v2-alpha was Apache-2.0 with attribution; the harness primitives copied from `anthropics/cwc-long-running-agents` retain their Apache-2.0 + Anthropic copyright; everything in this repo at `main` is MIT unless otherwise noted).

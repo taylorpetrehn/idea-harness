@@ -38,5 +38,9 @@ yarn-error.log*
 .env.local
 .env.*.local
 
-# Claude Code session-local files (ralph-loop state, etc.)
-.claude/
+# Claude Code session-local artifacts (don't commit these), but DO commit
+# the tracked harness primitives at .claude/{CLAUDE.md,settings.json,hooks/,agents/}.
+.claude/.ralph-state*
+.claude/.evidence-reads
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
