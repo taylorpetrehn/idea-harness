@@ -96,6 +96,7 @@ The cron, all on your Mac, all native macOS. No third-party schedulers, no cloud
 | `com.taylorpetrehn.idea-harness-harvest` | every **60 s** | Reads incomplete reminders from "App Ideas" via `osascript`, writes new `idea.md` files at `status: captured`, marks the source reminder complete. |
 | `com.taylorpetrehn.idea-harness-brainstorm` | every **1 hr** | If any `idea.md` has `status: captured`, spawns one autonomous `claude --print` session that runs steps 2–5 of the skill (route, score, brainstorm, critic via fresh subagent, sharpen). |
 | `com.taylorpetrehn.idea-harness-escalate` | every **10 min** | For each `idea.md` at `status: needs-detail` without an `escalated_at` timestamp, daemonizes a `claude --remote-control` session inside a pseudo-tty so it shows up on your phone, seeded with the brainstorm + open question. |
+| `com.taylorpetrehn.idea-harness-build` | every **15 min** | For each `idea.md` at `status: brainstormed` (= accepted in this consolidated flow) without `do_not_build: true`, spawns one autonomous `claude --print` orchestrator that builds the oldest pending idea: validates handoff, pre-flight hygiene check, spawns a builder in the target repo, parses `PR_URL=<url>` from output, flips `status: pr-open`. One idea per tick to bound cost. |
 
 ---
 
@@ -151,11 +152,25 @@ The session uses `--permission-mode bypassPermissions` and instructs Claude to u
 
 Push notification fires on your phone (Claude Code's built-in "needs a decision" trigger, requires v2.1.110+ and `agentPushNotifEnabled: true` in user settings). You tap, read, type a decision. Claude writes `## Decision`, flips `status: brainstormed`, exits. The session disappears from your phone.
 
-### 5. Decide and build (at the desk, on demand)
+### 5. Build (≤ 15 min, autonomous)
 
-Back at the Mac, `/inflight` shows what's brainstormed and ready for your judgment. Say "accept streamchat-drafts variant B" or similar, then "build it." The skill's step 7 spawns a builder Claude in the target repo's worktree, which reads the brainstorm body + `simplicity-rules.md` + the project's `conventions.md` from `references/context/<name>/`, implements the chosen variant on a feature branch, opens a PR, prints `PR_URL=<url>`. Status moves to `pr-open`.
+`build-accepted.py` runs every 15 min. For the OLDEST `brainstormed` idea without `do_not_build: true`:
 
-Step 8 watches in-flight PRs (CI, review state) and reconciles status to `shipped` when merged.
+1. Validate handoff (per `references/handoff-to-build.md`): all required frontmatter, brainstorm body has the chosen variant marked.
+2. Resolve the project from `projects.yml`. Skip if the project's `product.md` is still a stub.
+3. Pre-build hygiene: `git status --porcelain` in `local_path` must be empty.
+4. Set `status: building`, bump `last_touched`.
+5. Spawn the builder in the target repo (or its worktree if `uses_worktrees: true`) seeded with the brainstorm body + chosen variant + `simplicity-rules.md` + `branch-hygiene.md` + project conventions + bot identity setup. The builder implements on a feature branch, runs the project's tests, commits, pushes, runs `gh pr create`, prints `PR_URL=<url>`.
+6. Parse `PR_URL`. On success: `status: pr-open`, `github_pr` set, `## PR` section appended to idea body. On failure: revert to `brainstormed` with a `## Notes` entry pointing at the build log.
+7. Send one ntfy notification: `built {title}: <pr_url>` on success, or `build FAILED for {title}` on failure.
+
+**Brainstormed = accepted in this flow.** No separate human-approve step. The brainstormer's score+route gates auth/payments/migrations to `needs-critic-review` BEFORE they reach `brainstormed`, so the autonomy is bounded. To stop a specific brainstormed idea from auto-building, set `status: rejected` (kills it) or add `do_not_build: true` to its frontmatter (pauses it).
+
+One build per tick. If three ideas are brainstormed at the same time, they ship across three ticks (≤ 45 min for the batch). This caps cost per tick and avoids worktree contention.
+
+### 6. Watch (Step 8 of the skill)
+
+The build orchestrator's first action on each tick is reconcile: query `gh pr view` for any idea at `pr-open`, update status (`shipped` on merge, `rejected` on close, leave alone on change-requests). Eventually, this could re-spawn a builder to address review comments — for now, reviewing your own bot's PRs is a manual step.
 
 ---
 
