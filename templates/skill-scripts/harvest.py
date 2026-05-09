@@ -245,7 +245,7 @@ def main() -> int:
         idx = secrets.token_hex(4)
         slug = f"{stem}-{idx[:4]}"
         spec_dir = PLANS_DIR / slug
-        now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         content = build_idea_content(idx, title, slug, body, now)
 
         if args.dry_run:

@@ -92,7 +92,7 @@ def main() -> int:
         sys.stderr.write(f"[brainstorm] claude not at {CLAUDE_BIN}\n")
         return 1
 
-    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     add_dirs = [
         str(SPECS_DIR),
@@ -109,7 +109,11 @@ def main() -> int:
     ]
     for d in add_dirs:
         argv += ["--add-dir", d]
-    argv.append(SEED)
+    # `--` terminates options. Without it, --add-dir's variadic <directories...>
+    # greedily consumes the trailing positional prompt as another directory,
+    # leaving claude --print with no prompt and silently waiting on stdin
+    # (which is /dev/null in this daemon context).
+    argv += ["--", SEED]
 
     with open(LOG_FILE, "a") as logf:
         logf.write(f"\n[{now}] brainstorm batch starting\n")
@@ -121,7 +125,7 @@ def main() -> int:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
         )
-        end = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         logf.write(f"\n[{end}] brainstorm batch exit {proc.returncode}\n")
 
     return 0
