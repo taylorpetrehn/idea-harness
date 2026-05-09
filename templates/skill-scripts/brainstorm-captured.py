@@ -92,7 +92,7 @@ def main() -> int:
         sys.stderr.write(f"[brainstorm] claude not at {CLAUDE_BIN}\n")
         return 1
 
-    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     add_dirs = [
         str(SPECS_DIR),
@@ -121,7 +121,7 @@ def main() -> int:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
         )
-        end = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         logf.write(f"\n[{end}] brainstorm batch exit {proc.returncode}\n")
 
     return 0

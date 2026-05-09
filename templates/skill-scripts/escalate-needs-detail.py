@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 HOME = Path.home()
 SPECS_DIR = HOME / ".claude" / "plans" / "specs"
@@ -59,7 +60,7 @@ def short_name(slug: str) -> str:
     return slug[:25]
 
 
-def parse_frontmatter(idea_path: Path) -> dict | None:
+def parse_frontmatter(idea_path: Path) -> Optional[dict]:
     text = idea_path.read_text()
     m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
     if not m:
@@ -171,7 +172,7 @@ def main() -> int:
         sys.stderr.write(f"[escalate] claude binary not at {CLAUDE_BIN}\n")
         return 1
 
-    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     escalated = 0
 
     for spec_dir in sorted(SPECS_DIR.iterdir()):
