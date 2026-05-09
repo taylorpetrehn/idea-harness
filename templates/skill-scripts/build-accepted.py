@@ -153,7 +153,11 @@ def main() -> int:
     ]
     for d in add_dirs:
         argv += ["--add-dir", d]
-    argv.append(SEED)
+    # `--` terminates options. Without it, --add-dir's variadic <directories...>
+    # greedily consumes the trailing positional prompt as another directory,
+    # leaving claude --print with no prompt and silently waiting on stdin
+    # (which is /dev/null in this daemon context).
+    argv += ["--", SEED]
 
     with open(LOG_FILE, "a") as logf:
         logf.write(f"\n[{now}] build orchestrator starting\n")
