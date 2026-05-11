@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # inflight.sh — list ideas across ~/.claude/plans/, grouped by status.
 #
+# Phase 2 (2026-05-11): this is now a thin shim over `harness ideas list`.
+# The Python CLI at idea-harness/cli/ is the canonical implementation;
+# this shim exists so machines without the CLI installed still get a
+# useful listing.
+#
 # Reads frontmatter from:
 #   - ~/.claude/plans/specs/{slug}/idea.md  (new idea-harness layout)
 #   - ~/.claude/plans/specs/{name}.md       (flat layout, optional)
@@ -11,6 +16,11 @@
 # awaiting-review first, then in-flight, then archived.
 
 set -euo pipefail
+
+# Phase 2: defer to the CLI if it's installed.
+if command -v harness >/dev/null 2>&1; then
+  exec harness ideas list "$@"
+fi
 
 PLANS_DIR="${HOME}/.claude/plans"
 SPECS_DIR="${PLANS_DIR}/specs"

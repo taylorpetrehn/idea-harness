@@ -32,3 +32,11 @@ ideas/
 runs/
 state/
 context/
+
+# Python (Phase 2 harness-cli)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/

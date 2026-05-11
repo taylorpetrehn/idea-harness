@@ -469,10 +469,56 @@ for plist in ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-*.plist; do
 done
 
 # In-flight ideas
-~/.claude/skills/idea-harness/scripts/inflight.sh
+harness ideas list                    # canonical (CLI; see "CLI + MCP" below)
+~/.claude/skills/idea-harness/scripts/inflight.sh  # shim — defers to `harness` if installed
 # or, from any Claude Code session:
 /inflight
 ```
+
+### CLI + MCP
+
+Phase 2 of the bridge plan added a Python CLI at [cli/](cli/) that wraps
+`idea.md` frontmatter in first-class verbs. Install:
+
+```bash
+pip install -e cli/
+# now `harness` is on PATH
+```
+
+The CLI is dependency-free (stdlib only) and exposes:
+
+| Verb | Purpose |
+|---|---|
+| `harness ideas list [--status X] [--project Y] [--score-gte N] [--json]` | Same output as `/inflight`. |
+| `harness ideas show <slug> [--json]` | Frontmatter + body for one idea. |
+| `harness ideas accept <slug>` / `reject <slug>` / `reroute <slug> <project>` | Mutate state. Atomic write of `idea.md`. |
+| `harness ideas brainstorm <slug>` / `build <slug>` | Manual trigger of `brainstorm-captured.py` / `build-accepted.py` for one slug. Skips the cron wait. |
+| `harness capture "<title>" [--project X] [--notes ...]` | Capture an idea without going through Reminders. |
+| `harness init-harness [<repo-path>] [--apply]` | Scaffold `.harness/config.json` + `CLAUDE.md` in a repo. Defaults to dry-run; introspects stacks. |
+| `harness reindex` | Rebuild `~/.claude/plans/index.sqlite` from disk. Cheap; safe to run anytime. |
+| `harness reconcile [--dry-run]` | Poll `pr-open` ideas, update status from GitHub (merged → shipped, closed → rejected, change-requests → note). |
+| `harness mcp serve` | JSON-RPC 2.0 stdio MCP server. Same verbs as MCP tools. |
+
+The filesystem (`~/.claude/plans/specs/<slug>/idea.md`) stays canonical;
+the CLI just makes the verbs first-class. The SQLite index is a derived
+cache, rebuildable from disk.
+
+To expose the verbs to Claude Code as MCP tools, add to `~/.claude/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "idea-harness": { "command": "harness", "args": ["mcp", "serve"] }
+  }
+}
+```
+
+Slash commands at [templates/commands/](templates/commands/) wrap the CLI:
+
+- `/inflight` → `harness ideas list`
+- `/idea-accept <slug>`, `/idea-reject <slug>`, `/idea-build <slug>`
+- `/idea-search [filters]` — passthrough to `harness ideas list`
+- `/harness-init [<path>]` → `harness init-harness`
 
 ### Tail the logs
 
