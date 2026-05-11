@@ -56,7 +56,7 @@ Then for the BUILD step:
      - project: a non-null value matching a key in references/projects.yml
    Sort by `last_touched` ascending (oldest first). If none match, exit cleanly with code 0 and no notification.
 
-2. Resolve the project from references/projects.yml. Read it via the Read tool. If the matched project's references/context/{name}/product.md still contains the literal word "STUB", skip the idea and continue to the next match.
+2. Resolve the project from references/projects.yml. Read it via the Read tool. Resolve per-project context paths (product, decisions, conventions) per SKILL.md's "Per-project context resolution" rule: prefer {local_path}/{path} when projects.yml has the path set and the file exists on the working tree; otherwise fall back to references/context/{name}/{file}.md. If the resolved product.md still contains the literal word "STUB", skip the idea and continue to the next match.
 
 3. Validate handoff (references/handoff-to-build.md): all required frontmatter fields present, brainstorm has the chosen variant marked. If invalid, revert status to brainstormed (or its current state) with a Notes entry explaining what's missing, and continue to the next idea.
 
@@ -75,7 +75,7 @@ Then for the BUILD step:
      - The base branch from project.vcs.base_branch
      - The full content of references/simplicity-rules.md
      - The full content of references/branch-hygiene.md
-     - The full content of references/context/{name}/conventions.md
+     - The full content of the project's conventions.md (resolved per SKILL.md's "Per-project context resolution" rule — repo-side {local_path}/{conventions_path} if set and present, else references/context/{name}/conventions.md)
      - The bot identity setup commands (from project.vcs.bot)
      - Instructions: implement on a feature branch, run project.commands.test_*, commit with descriptive message, push using the bot PAT, gh pr create against base_branch, print exactly one line `PR_URL=<url>` on success or `PR_FAILED=<reason>` on any failure. Never push to base_branch directly. Never use --no-verify.
 

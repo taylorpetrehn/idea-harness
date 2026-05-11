@@ -44,7 +44,8 @@ Read ~/.claude/skills/idea-harness/SKILL.md. Process every idea.md under ~/.clau
 
 Constraints:
   - Use the Edit tool for all idea.md modifications (no Bash sed/awk).
-  - If a project's references/context/{name}/product.md still contains the literal word "STUB", set the idea's status to needs-detail with a "## Notes" entry pointing at that gap, and skip brainstorm for it.
+  - Resolve per-project context (product.md, decisions.md, conventions.md) per SKILL.md's "Per-project context resolution" rule: if projects.yml has product_path/decisions_path/conventions_path set, read from {local_path}/{path} on the working tree; otherwise fall back to references/context/{name}/{name}.md.
+  - If the resolved product.md still contains the literal word "STUB", set the idea's status to needs-detail with a "## Notes" entry pointing at that gap, and skip brainstorm for it.
   - The critic must be a fresh subagent (Agent tool, general-purpose) with the brainstorm + raw idea + references/critic-rubric.md as input. Returns JSON to spec-eval.json.
 
 After processing all captured ideas, count what changed and send ONE notification only if anything moved into a state Taylor would care about:
