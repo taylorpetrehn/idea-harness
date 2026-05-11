@@ -43,7 +43,7 @@ Hey Siri, add to App Ideas
 - [Operations](#operations)
 - [Reference](#reference)
 - [Known gotchas](#known-gotchas)
-- [Archive (v2.0.0-alpha)](#archive-v200-alpha)
+- [Migration](#migration)
 
 ---
 
@@ -723,22 +723,74 @@ last_touched: <ISO 8601 UTC>                    # bumped on any change
 
 ---
 
-## Archive (v2.0.0-alpha)
+## Migration
 
-The earlier standalone Node CLI (with the Ink dashboard, `harness brainstorm` / `harness ship` / `harness build` verbs, an `ideas/` folder under this repo, contracts/agents in TypeScript) was archived **2026-05-07** at tag `archive/v2-alpha`.
+Two distinct consolidations brought the current single-orchestrator design
+into existence. Both are complete; this section is the breadcrumb trail.
 
-**Why retired:** consolidated three parallel systems (this CLI, the openclaw `idea-pipeline` skill, and native `shape-spec`/`write-spec`) onto one. The brainstorm/critic IP from the CLI was ported into the skill; the openclaw `simplicity-rules.md`, `projects.yml`, and `branch-hygiene.md` were ported alongside; the Ink dashboard, runs ledger, contracts package, and global npm-linked binary were retired.
+### 2026-05-07 — Node CLI → Claude skill (`archive/v2-alpha`)
 
-**To restore for reference:**
+The earlier standalone Node CLI (Ink dashboard, `harness brainstorm` /
+`harness ship` / `harness build` verbs, an `ideas/` folder under this repo,
+contracts/agents in TypeScript) was archived at tag `archive/v2-alpha`. The
+brainstorm/critic IP, `simplicity-rules.md`, `projects.yml`, and
+`branch-hygiene.md` were ported into the canonical skill at
+`~/.claude/skills/idea-harness/`. The Ink dashboard, runs ledger,
+contracts package, and `npm link`-ed binary were retired in favor of the
+filesystem-as-state design described above.
+
+To poke around in the old code:
 
 ```bash
 cd ~/Projects/idea-harness
 git checkout archive/v2-alpha
-# poke around. /inflight on the new system still works in parallel.
-git checkout main   # back to the new world
+# /inflight on the new system still works in parallel.
+git checkout main   # back to the current world
 ```
 
-The tag is on origin. The CLI binary was `npm unlink`-ed; restoring the binary requires `npm install && npm link` from the archived state.
+The tag is on origin. Restoring the CLI binary requires `npm install &&
+npm link` from the archived state.
+
+### 2026-05-11 — OpenClaw `idea-pipeline` → idea-harness
+
+The OpenClaw runtime at `~/.openclaw/` previously hosted a parallel
+`idea-pipeline` skill (state in `ideas.jsonl`, cron + webhook trigger,
+four-reviewer gauntlet, runtime evaluator). The bridge plan at
+[docs/bridge-plan.md](docs/bridge-plan.md) called for collapsing both
+orchestrators into idea-harness. This phase did that:
+
+- **Review gauntlet ported** — OpenClaw's 4-reviewer gauntlet
+  (spec-fidelity, codebase-patterns, risk, ux) is now
+  [templates/skill-scripts/review-gauntlet.py](templates/skill-scripts/review-gauntlet.py)
+  with rubrics in
+  [templates/skill-scripts/review-rubrics/](templates/skill-scripts/review-rubrics/).
+  `build-accepted.py` invokes it after `PR_URL=` is parsed.
+- **Projects registry consolidated** — the canonical
+  `~/.claude/skills/idea-harness/references/projects.yml` already covers
+  every project OpenClaw routed to (LetsBarker, OpenClaw, Rewilding) plus
+  Tooter, which OpenClaw never had. No re-merge needed.
+- **Historical ideas archived** —
+  [templates/skill-scripts/migrate-from-openclaw.py](templates/skill-scripts/migrate-from-openclaw.py)
+  reads `~/.openclaw/workspace-bonnie/data/idea-pipeline/ideas.jsonl`,
+  emits a summary ledger at
+  `~/.claude/skills/idea-harness/logs/openclaw-migration.json`, and ports
+  any non-terminal records as fresh `idea.md` files. Idempotent — safe to
+  re-run. Defaults to `--dry-run`.
+- **OpenClaw cron disabled** —
+  [templates/skill-scripts/openclaw-disable.sh](templates/skill-scripts/openclaw-disable.sh)
+  unloads any remaining `~/Library/LaunchAgents/com.openclaw.*` /
+  `*idea-pipeline*` plists. Run after the merge PR lands.
+- **LetsBarker doc redirect** — a sibling PR in the LetsBarker repo will
+  swap `docs/orchestration-architecture.md`, `WORKFLOW.md`, and
+  `AGENTS.md` to point at idea-harness rather than OpenClaw. That change
+  cannot land in this repo; see
+  [docs/letsbarker-redirect-patch.md](docs/letsbarker-redirect-patch.md)
+  for the exact diff to apply.
+
+See [docs/openclaw-merge.md](docs/openclaw-merge.md) for the full
+move/dies/already-done/deferred breakdown, verification gates, and
+rollback procedure. The `~/.openclaw/` directory is left intact for one
+rollback cycle.
 
 ---
 
