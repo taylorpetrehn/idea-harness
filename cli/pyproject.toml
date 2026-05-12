@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-cli"
+version = "0.1.0"
+description = "CLI + MCP surface for the idea-harness skill: list/show/accept/build ideas, init repos, expose the same verbs to Claude Code via MCP."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Taylor Petrehn" }]
+license = { text = "MIT" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Environment :: Console",
+]
+# No third-party runtime deps. argparse + stdlib only.
+# Optional: pyyaml would be nicer for projects.yml, but we already have a
+# strict-subset YAML parser in state.py — keep it dep-free.
+dependencies = []
+
+[project.scripts]
+harness = "harness.__main__:main"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["harness*"]
