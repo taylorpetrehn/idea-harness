@@ -17,7 +17,11 @@
       {
         "matcher": "Write|Edit",
         "hooks": [
-          { "type": "command", "command": ".claude/hooks/verify-gate.sh" }
+          {
+            "type": "command",
+            "command": ".claude/hooks/verify-gate.sh",
+            "continueOnBlock": true
+          }
         ]
       }
     ],

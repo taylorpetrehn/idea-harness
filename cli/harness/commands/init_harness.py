@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -55,10 +56,33 @@ def guess_commands(stacks: list[str], repo: Path) -> dict[str, str]:
 
 
 def cmd_init_harness(args: argparse.Namespace) -> int:
-    repo = Path(args.repo_path).expanduser().resolve()
+    # Default repo path: if --repo-path is the literal "." (the argparse
+    # default), prefer $CLAUDE_PROJECT_DIR when Claude Code 2.1.139+ has
+    # populated it (every Claude Code session sets it to the project root).
+    raw = args.repo_path
+    if raw == ".":
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+        if project_dir:
+            raw = project_dir
+            sys.stdout.write(f"[init-harness] using CLAUDE_PROJECT_DIR: {project_dir}\n")
+    repo = Path(raw).expanduser().resolve()
     if not repo.is_dir():
         sys.stderr.write(f"[harness] not a directory: {repo}\n")
         return 1
+
+    # Claude Code 2.1.139: warn if ANTHROPIC_API_KEY is set. The harness
+    # relies on Claude Remote Control (Phase 1 escalation path),
+    # /schedule, and claude.ai MCP connectors — all three are disabled
+    # when the API key short-circuits the claude.ai login flow.
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        sys.stderr.write(
+            "\n⚠️  ANTHROPIC_API_KEY is set. Remote Control, /schedule, and\n"
+            "    claude.ai MCP connectors are DISABLED when ANTHROPIC_API_KEY\n"
+            "    is exported. The harness escalation flow (idea → phone) needs\n"
+            "    Remote Control. Unset it for an interactive session:\n"
+            "        unset ANTHROPIC_API_KEY\n"
+            "    Then re-launch your shell or this session.\n\n"
+        )
 
     name = args.name or repo.name.lower().replace(" ", "-")
     stacks = detect_stacks(repo)

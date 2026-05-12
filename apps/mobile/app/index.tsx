@@ -12,7 +12,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { StatusPill } from '../src/components/StatusPill';
-import { HarnessNotConfigured, useIdeas, type IdeaSummary } from '../src/lib/mcp';
+import {
+  HarnessNotConfigured,
+  useAgents,
+  useIdeas,
+  type AgentSession,
+  type IdeaSummary,
+} from '../src/lib/mcp';
 
 const GROUP_ORDER = [
   'needs-critic-review',
@@ -30,6 +36,7 @@ type Section = { title: string; data: IdeaSummary[] };
 
 export default function InboxScreen() {
   const { data, isLoading, error, refetch, isRefetching } = useIdeas();
+  const { data: agentsData, refetch: refetchAgents } = useAgents();
   const [refreshSeq, setRefreshSeq] = useState(0);
 
   // Re-fetch on screen focus so an accept/reject from Detail reflects when
@@ -37,7 +44,12 @@ export default function InboxScreen() {
   useFocusEffect(
     useCallback(() => {
       void refetch();
-    }, [refreshSeq, refetch])
+      void refetchAgents();
+    }, [refreshSeq, refetch, refetchAgents])
+  );
+
+  const liveAgents = (agentsData?.agents ?? []).filter(
+    a => a.status === 'running' || a.status === 'blocked'
   );
 
   const sections = useMemo<Section[]>(() => {
@@ -113,6 +125,18 @@ export default function InboxScreen() {
               ))}
             </View>
           )}
+          ListHeaderComponent={
+            liveAgents.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionHeader}>
+                  active sessions · {liveAgents.length}
+                </Text>
+                {liveAgents.map((a, idx) => (
+                  <AgentRow key={a.id ?? `agent-${idx}`} agent={a} />
+                ))}
+              </View>
+            ) : null
+          }
           ListEmptyComponent={
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>No ideas in flight</Text>
@@ -124,6 +148,24 @@ export default function InboxScreen() {
         />
       )}
     </SafeAreaView>
+  );
+}
+
+function AgentRow({ agent }: { agent: AgentSession }) {
+  const dotStyle = [styles.agentDot, agent.status === 'running' ? styles.agentDotRun : styles.agentDotBlocked];
+  return (
+    <View style={styles.agentRow}>
+      <View style={dotStyle} />
+      <View style={styles.agentBody}>
+        <Text style={styles.agentSummary} numberOfLines={2}>
+          {agent.summary || '(no summary)'}
+        </Text>
+        <Text style={styles.agentMeta} numberOfLines={1}>
+          {agent.status}
+          {agent.cwd ? ` · ${agent.cwd}` : ''}
+        </Text>
+      </View>
+    </View>
   );
 }
 
@@ -176,4 +218,19 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: '#f8fafc', fontWeight: '600' },
   headerLink: { color: '#f8fafc', fontSize: 18, paddingHorizontal: 8 },
+  agentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    marginBottom: 8,
+    gap: 12,
+  },
+  agentDot: { width: 10, height: 10, borderRadius: 5 },
+  agentDotRun: { backgroundColor: '#22c55e' },
+  agentDotBlocked: { backgroundColor: '#f59e0b' },
+  agentBody: { flex: 1, gap: 2 },
+  agentSummary: { color: '#f8fafc', fontSize: 14, fontWeight: '500' },
+  agentMeta: { color: '#64748b', fontSize: 12 },
 });

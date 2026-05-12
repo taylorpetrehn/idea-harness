@@ -42,6 +42,7 @@ Hey Siri, add to App Ideas
 - [Onboarding an existing project](#onboarding-an-existing-project)
 - [Operations](#operations)
 - [Reference](#reference)
+- [Claude Code 2.1.139 integration](#claude-code-21139-integration)
 - [Known gotchas](#known-gotchas)
 - [Archive (v2.0.0-alpha)](#archive-v200-alpha)
 
@@ -883,6 +884,41 @@ gh secret set HARNESS_MCP_TOKEN --repo <repo> < ~/.secrets/harness-mobile-token
 ### What's deferred (truly out of scope now)
 
 The bridge plan's §Out-of-scope list still stands: multi-repo single ideas, semantic search / embeddings, analytics, Slack/email/iMessage capture, automated PR-review-comment-addressing loops, web UI, multi-tenant, alternative cloud vendors. None of those are Phase 4.
+
+---
+
+## Claude Code 2.1.139 integration
+
+Phase 5 wires the harness up to five Claude Code 2.1.139 features. None of them are mandatory — every piece degrades gracefully on older Claude binaries — but each one trims a wart that previously lived in this codebase.
+
+| Feature | Where it shows up | What it replaces |
+|---|---|---|
+| `/goal` | `templates/skill-scripts/build-accepted.py` (SEED step 6) + `templates/skill-scripts/worktree-runner.sh` | The hand-rolled "turn ≤ N" Ralph loop that used to live in `worktree-runner.sh`. The builder is now spawned with `/goal "PR open on branch X against main with passing CI"` prepended, and Claude Code's own goal loop decides when to stop. |
+| `claude agents --json` | New MCP tool `agents.list` in `cli/harness/commands/mcp_server.py`; Expo Inbox renders "active sessions" via `useAgents()` in `apps/mobile/src/lib/mcp.ts` | The Inbox used to surface only `idea.md` frontmatter state; now it shows the actual running/blocked agent sessions alongside ideas, so you can tell at a glance whether a `building` idea actually has a session in flight. |
+| `CLAUDE_PROJECT_DIR` | `harness init-harness` (defaults `.` to `$CLAUDE_PROJECT_DIR` when set); `_log_env_context()` in the stdio MCP server logs it at startup | `init-harness` no longer requires `--repo-path` when invoked from a Claude Code session — the harness picks up the project root the host already knows about. |
+| `continueOnBlock: true` | `.claude/settings.json` (root) `verify-gate.sh`; `templates/repo/settings.json` (`safety-check.sh`) | A blocked Write/Edit used to hard-stop the turn. With `continueOnBlock`, the gate's rejection message is fed back to the agent as a tool result so it can retry (add a screenshot, ask the user to drop `.harness/.allow-once`, etc.) instead of dying. On Claude Code < 2.1.139 the key is silently ignored — same hard-stop behavior as before. |
+| `ANTHROPIC_API_KEY` warning | `harness init-harness` prints a stderr warning when the var is set; the stdio MCP server logs the same hint at startup (when `HARNESS_MCP_DEBUG` is set) | The harness's escalation flow depends on `claude --remote-control`, `/schedule`, and claude.ai MCP connectors — all three are disabled when `ANTHROPIC_API_KEY` short-circuits the claude.ai login. Onboarding now flags this loudly. |
+
+### Smoke-checking the integration
+
+```bash
+# 1. /goal threading
+grep '"/goal' templates/skill-scripts/build-accepted.py templates/skill-scripts/worktree-runner.sh
+
+# 2. agents.list MCP tool registered
+python3 -c "from harness.commands.mcp_server import TOOL_REGISTRY; print('agents.list' in TOOL_REGISTRY)"
+
+# 3. CLAUDE_PROJECT_DIR fallback
+CLAUDE_PROJECT_DIR=/tmp/some-repo harness init-harness . | head -2
+
+# 4. continueOnBlock present
+python3 -c "import json; s=json.load(open('.claude/settings.json')); print([h for g in s['hooks']['PreToolUse'] for h in g['hooks'] if h.get('continueOnBlock')])"
+
+# 5. API-key warning
+ANTHROPIC_API_KEY=sk-test harness init-harness . 2>&1 | grep -A1 'ANTHROPIC_API_KEY is set'
+```
+
+The pytest suite covers all five in `cli/tests/test_cli_2_1_139.py`.
 
 ---
 

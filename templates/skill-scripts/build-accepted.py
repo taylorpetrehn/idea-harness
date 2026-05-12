@@ -78,6 +78,7 @@ Then for the BUILD step:
      - The full content of the project's conventions.md (resolved per SKILL.md's "Per-project context resolution" rule — repo-side {local_path}/{conventions_path} if set and present, else references/context/{name}/conventions.md)
      - The bot identity setup commands (from project.vcs.bot)
      - Instructions: implement on a feature branch, run project.commands.test_*, commit with descriptive message, push using the bot PAT, gh pr create against base_branch, print exactly one line `PR_URL=<url>` on success or `PR_FAILED=<reason>` on any failure. Never push to base_branch directly. Never use --no-verify.
+     - Claude Code 2.1.139+: prepend the seed with `/goal "PR open with passing CI on {branch}"` so Claude Code runs its own iteration loop until the goal is reached or it gives up. The harness no longer hand-rolls a turn counter; /goal handles convergence and signals completion when the PR is open and CI is green. If /goal isn't available on the spawned claude binary, the rest of the seed still works as a single-turn directive.
 
 7. Spawn the builder: use the Bash tool to run claude --print with that seed in the project's local_path (or in a fresh worktree if project.vcs.uses_worktrees is true). Capture stdout to a log at the spec dir's build.log.
 

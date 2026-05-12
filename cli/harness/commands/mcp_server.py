@@ -110,6 +110,71 @@ def tool_ideas_reroute(args: dict[str, Any]) -> dict[str, Any]:
     return {"slug": args["slug"], "previous_project": previous, "project": new_project}
 
 
+def tool_agents_list(args: dict[str, Any]) -> dict[str, Any]:
+    """Wrap `claude agents --json` (new in Claude Code 2.1.139).
+
+    Returns a normalized {agents: [{id, status, summary, started_at, ...}], count: N}
+    so the mobile app can render a "live sessions" section alongside the
+    idea Inbox without parsing the raw `claude agents` schema.
+
+    args (all optional):
+      - status: filter to one of running|blocked|done|failed
+      - limit:  cap result count (default 50)
+    """
+    import json as _json
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    claude = _shutil.which("claude")
+    if not claude:
+        return {"agents": [], "count": 0, "error": "claude binary not on PATH"}
+    try:
+        proc = _subprocess.run(
+            [claude, "agents", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except _subprocess.TimeoutExpired:
+        return {"agents": [], "count": 0, "error": "claude agents --json timed out"}
+    if proc.returncode != 0:
+        return {
+            "agents": [],
+            "count": 0,
+            "error": f"claude agents --json exited {proc.returncode}: {proc.stderr.strip()[:200]}",
+        }
+    try:
+        raw = _json.loads(proc.stdout or "[]")
+    except _json.JSONDecodeError as exc:
+        return {"agents": [], "count": 0, "error": f"non-JSON from claude agents: {exc}"}
+
+    # claude agents returns a list of objects; shape isn't 100% locked
+    # across versions, so we normalize defensively.
+    items = raw if isinstance(raw, list) else (raw.get("agents") or [])
+    normalized = []
+    for a in items:
+        if not isinstance(a, dict):
+            continue
+        normalized.append(
+            {
+                "id": a.get("id") or a.get("session_id") or a.get("sessionId"),
+                "status": (a.get("status") or "unknown").lower(),
+                "summary": a.get("summary") or a.get("title") or a.get("description") or "",
+                "started_at": a.get("started_at") or a.get("startedAt"),
+                "cwd": a.get("cwd") or a.get("workdir"),
+                "model": a.get("model"),
+            }
+        )
+
+    status_filter = args.get("status")
+    if status_filter:
+        normalized = [a for a in normalized if a["status"] == status_filter]
+    limit = args.get("limit") or 50
+    if isinstance(limit, int) and limit > 0:
+        normalized = normalized[:limit]
+    return {"agents": normalized, "count": len(normalized)}
+
+
 def tool_capture(args: dict[str, Any]) -> dict[str, Any]:
     # Implement here to avoid a circular import with commands.capture.
     from ..slug import gen_id, slugify
@@ -222,6 +287,24 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "required": ["title"],
         },
     },
+    "agents.list": {
+        "handler": tool_agents_list,
+        "description": (
+            "List live Claude Code agent sessions (new in Claude Code 2.1.139). "
+            "Wraps `claude agents --json` and normalizes the shape so the mobile "
+            "Inbox can render running / blocked / done sessions alongside ideas."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Optional filter: running|blocked|done|failed",
+                },
+                "limit": {"type": "integer", "description": "Cap result count (default 50)"},
+            },
+        },
+    },
 }
 
 
@@ -302,6 +385,28 @@ def _log(msg: str) -> None:
         sys.stderr.flush()
 
 
+def _log_env_context() -> None:
+    """One-shot at startup: log Claude Code 2.1.139+ env hints if present.
+
+    `CLAUDE_PROJECT_DIR` is automatically set by Claude Code when it
+    spawns an MCP server over stdio. Phase-4-and-prior code in this
+    package resolved project dirs by reading projects.yml or by
+    requiring an explicit --cwd; now we have a project hint for free.
+    Tools that need a "current project" anchor (e.g. capture-without-
+    explicit-project) can fall back to this env var.
+    """
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project_dir:
+        _log(f"CLAUDE_PROJECT_DIR={project_dir}")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        _log(
+            "ANTHROPIC_API_KEY is set; Remote Control / /schedule / claude.ai "
+            "MCP connectors are disabled. The harness escalation flow needs RC — "
+            "consider unsetting it for the cron jobs that depend on RC."
+        )
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Dispatch to stdio (default) or HTTP (Phase 3) transport.
 
@@ -317,6 +422,7 @@ def _cmd_stdio_serve(args: argparse.Namespace) -> int:
     """Run the stdio server. Reads newline-delimited JSON-RPC from stdin,
     writes responses to stdout."""
     _log(f"started {SERVER_NAME} v{SERVER_VERSION}")
+    _log_env_context()
     for line in sys.stdin:
         line = line.strip()
         if not line:

@@ -324,10 +324,17 @@ if [[ -n "${BUILDER_CMD:-}" ]]; then
   fi
 elif [[ -n "${BUILDER_SEED_FILE:-}" ]]; then
   [[ -f "$BUILDER_SEED_FILE" ]] || die "BUILDER_SEED_FILE missing: $BUILDER_SEED_FILE"
-  log "builder: claude --print < $BUILDER_SEED_FILE"
+  # Claude Code 2.1.139+: prepend `/goal "PR open and CI green"` so Claude
+  # Code drives its own convergence loop. The runner is no longer
+  # responsible for retry counting. If /goal isn't supported (older
+  # claude binary), the seed still runs as a single directive — the
+  # slash command line is just ignored.
+  GOAL_DIRECTIVE="/goal \"PR open on branch $BRANCH against $PROJECT_BASE_BRANCH, with all required CI checks passing\""
+  log "builder: claude --print < ($GOAL_DIRECTIVE + seed)"
   if [[ $DRY_RUN -eq 0 ]]; then
     mkdir -p "$SPEC_DIR"
-    ( cd "$BUILD_PATH" && claude --print "$(cat "$BUILDER_SEED_FILE")" ) 2>&1 | tee -a "$LOG_FILE" >"${SPEC_DIR}/build.log" || true
+    SEED_WITH_GOAL=$(printf '%s\n\n%s' "$GOAL_DIRECTIVE" "$(cat "$BUILDER_SEED_FILE")")
+    ( cd "$BUILD_PATH" && claude --print "$SEED_WITH_GOAL" ) 2>&1 | tee -a "$LOG_FILE" >"${SPEC_DIR}/build.log" || true
   fi
 else
   log "no BUILDER_CMD or BUILDER_SEED_FILE set; skipping builder spawn (use --dry-run for plan only)"

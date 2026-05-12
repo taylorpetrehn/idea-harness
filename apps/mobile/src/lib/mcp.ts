@@ -103,10 +103,21 @@ export async function pingWith(cfg: HarnessConfig): Promise<void> {
   await rpcWith<unknown>(cfg, 'ping', {});
 }
 
+export type AgentSession = {
+  id: string | null;
+  status: string;
+  summary: string;
+  started_at: string | null;
+  cwd: string | null;
+  model: string | null;
+};
+
 export const queryKeys = {
   ideas: (filter?: { status?: string; project?: string; scoreGte?: number }) =>
     ['ideas', filter ?? {}] as const,
   idea: (slug: string) => ['idea', slug] as const,
+  agents: (filter?: { status?: string; limit?: number }) =>
+    ['agents', filter ?? {}] as const,
 };
 
 export function useIdeas(filter?: { status?: string; project?: string; scoreGte?: number }) {
@@ -149,3 +160,22 @@ function makeMutation(tool: string) {
 export const useAccept = makeMutation('ideas.accept');
 export const useReject = makeMutation('ideas.reject');
 export const useReroute = makeMutation('ideas.reroute');
+
+/**
+ * Live Claude Code agent sessions via `claude agents --json` on the host.
+ * Wraps the Claude Code 2.1.139 `agents.list` MCP tool. Tolerates a missing
+ * `claude` binary by surfacing `error` in the payload instead of throwing.
+ */
+export function useAgents(filter?: { status?: string; limit?: number }) {
+  return useQuery({
+    queryKey: queryKeys.agents(filter),
+    queryFn: () =>
+      callTool<{ agents: AgentSession[]; count: number; error?: string }>('agents.list', {
+        ...(filter?.status ? { status: filter.status } : {}),
+        ...(filter?.limit ? { limit: filter.limit } : {}),
+      }),
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+}
