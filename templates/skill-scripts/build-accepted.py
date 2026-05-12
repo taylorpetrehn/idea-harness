@@ -60,11 +60,11 @@ Then for the BUILD step:
 
 3. Validate handoff (references/handoff-to-build.md): all required frontmatter fields present, brainstorm has the chosen variant marked. If invalid, revert status to brainstormed (or its current state) with a Notes entry explaining what's missing, and continue to the next idea.
 
-4. Set up the build path (worktree-aware):
-   - If `project.vcs.uses_worktrees` is true: create a fresh worktree from origin. The build_path is the new worktree; the dirty state of `project.local_path` (the main checkout) is irrelevant and must NOT block the build.
-       bash -lc "cd {project.local_path} && git fetch origin && git worktree add {project.worktree_pattern} -B idea/{slug-stub}-{id4} origin/{project.vcs.base_branch}"
-     where `slug-stub` is the first ~30 chars of the idea's slug (with the trailing -id4 suffix dropped) and `{id4}` is the last 4 hex chars.
-   - If `project.vcs.uses_worktrees` is false: build_path is `project.local_path` itself. Run `bash -lc "cd {project.local_path} && git status --porcelain"`. If non-empty, append a Notes entry, do NOT proceed; continue to next idea.
+4. (Phase 3) Delegate the worktree + env install + smoke + builder hand-off to ~/.claude/skills/idea-harness/scripts/worktree-runner.sh. Compose the builder seed prompt (step 5 below) and write it to a temp file, then invoke:
+       bash -lc "BUILDER_SEED_FILE=/tmp/build-seed-{slug}.md ~/.claude/skills/idea-harness/scripts/worktree-runner.sh {project} {slug}"
+   The runner reads `.harness/config.json:env_install` for the project's stacks and runs them in order, then runs `commands.smoke`, then spawns `claude --print` with the seed inside the worktree. Stdout is tee'd to spec_dir/build.log.
+   - If the runner is missing (older installs): fall back to the inline worktree-create logic — `bash -lc "cd {project.local_path} && git fetch origin && git worktree add {project.worktree_pattern} -B idea/{slug-stub}-{id4} origin/{project.vcs.base_branch}"`, then run env install + smoke + spawn the builder yourself.
+   - If `project.vcs.uses_worktrees` is false: skip worktree creation; build_path is `project.local_path`. Refuse if it has a dirty working tree.
 
 5. Update the idea's frontmatter: status: building, set last_touched. Use a single Edit call.
 

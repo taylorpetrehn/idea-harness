@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Callable
 
 from .. import index as index_mod
@@ -302,6 +303,17 @@ def _log(msg: str) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    """Dispatch to stdio (default) or HTTP (Phase 3) transport.
+
+    Both transports share the same _handle() entry point and TOOL_REGISTRY;
+    only the framing differs.
+    """
+    if getattr(args, "http", False):
+        return _cmd_http_serve(args)
+    return _cmd_stdio_serve(args)
+
+
+def _cmd_stdio_serve(args: argparse.Namespace) -> int:
     """Run the stdio server. Reads newline-delimited JSON-RPC from stdin,
     writes responses to stdout."""
     _log(f"started {SERVER_NAME} v{SERVER_VERSION}")
@@ -339,4 +351,189 @@ def cmd_serve(args: argparse.Namespace) -> int:
             break
 
     _log("stdin closed; exiting")
+    return 0
+
+
+# ===== HTTP transport (Phase 3) =========================================
+#
+# Wraps the same _handle() in a tiny stdlib HTTP server with bearer-token
+# auth. Designed for binding to a Tailscale tailnet IP (or 127.0.0.1 +
+# `tailscale serve` for the funnel case).
+#
+# Wire format:
+#   POST /rpc
+#   Authorization: Bearer <token>
+#   Content-Type: application/json
+#   Body: a single JSON-RPC 2.0 request (no batching)
+#
+#   Response: 200 + JSON-RPC 2.0 response, or:
+#     400 — malformed JSON / not an object
+#     401 — missing or wrong Authorization header
+#     405 — wrong method
+#     500 — unexpected server error (the JSON-RPC error case still 200s
+#           with an `error` body, like stdio mode)
+#
+# We deliberately don't speak the full MCP HTTP streaming transport
+# spec — the official spec uses Server-Sent Events for notifications,
+# which we don't need yet (the mobile app polls). When/if the mobile
+# app needs server-pushed events, we add an /events SSE endpoint here.
+
+import http.server
+import secrets as _secrets
+import socketserver
+import threading
+
+
+def _load_token(path: str) -> str:
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise FileNotFoundError(f"token file not found: {p}")
+    token = p.read_text().strip()
+    if not token:
+        raise ValueError(f"token file is empty: {p}")
+    return token
+
+
+def _gen_token_to(path: str) -> str:
+    """Generate a 32-byte URL-safe token, write to path, chmod 600.
+    Returns the token."""
+    p = Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    token = _secrets.token_urlsafe(32)
+    p.write_text(token + "\n")
+    try:
+        p.chmod(0o600)
+    except OSError:
+        pass  # best effort; non-POSIX FS may not support chmod
+    return token
+
+
+class _MCPHandler(http.server.BaseHTTPRequestHandler):
+    # Set by the server factory below.
+    server_token: str = ""
+
+    # Quiet the default access log; we use _log() instead.
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: D401
+        _log(f"http {self.address_string()} {format % args}")
+
+    def _authed(self) -> bool:
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return False
+        provided = header[len("Bearer ") :].strip()
+        # Constant-time compare to avoid timing oracles.
+        return _secrets.compare_digest(provided, self.server_token)
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        # CORS for the mobile app — same-origin in production via Tailscale,
+        # but the dev client runs on a different origin during expo dev.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_plain(self, status: int, msg: str) -> None:
+        body = msg.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 — http.server naming
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/health":
+            self._send_json(200, {"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION})
+            return
+        self._send_plain(404, "not found")
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/rpc":
+            self._send_plain(404, "not found")
+            return
+        if not self._authed():
+            self._send_plain(401, "unauthorized")
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_plain(400, "missing or oversized body")
+            return
+        raw = self.rfile.read(length)
+        try:
+            request = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._send_json(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"parse error: {exc}"}})
+            return
+        if not isinstance(request, dict):
+            self._send_plain(400, "expected a single JSON-RPC object (no batching in HTTP transport)")
+            return
+
+        response = _handle(request)
+        if response is None:
+            # Notification with no reply — return 204 No Content.
+            self.send_response(204)
+            self.end_headers()
+            return
+        self._send_json(200, response)
+
+
+class _ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _cmd_http_serve(args: argparse.Namespace) -> int:
+    """Run the HTTP+token server. For the Phase 3 mobile app."""
+    if not args.token_file:
+        sys.stderr.write("[harness-mcp] --token-file is required for --http mode\n")
+        return 2
+
+    token_path = Path(args.token_file).expanduser()
+    if not token_path.is_file():
+        if args.generate_token:
+            token = _gen_token_to(str(token_path))
+            sys.stderr.write(f"[harness-mcp] generated token at {token_path} (chmod 600)\n")
+        else:
+            sys.stderr.write(
+                f"[harness-mcp] token file missing: {token_path}\n"
+                "[harness-mcp] re-run with --generate-token to create one, or write a token to that path first.\n"
+            )
+            return 2
+    else:
+        try:
+            token = _load_token(str(token_path))
+        except (FileNotFoundError, ValueError) as exc:
+            sys.stderr.write(f"[harness-mcp] {exc}\n")
+            return 2
+
+    bind = args.bind or "127.0.0.1"
+    port = args.port or 7777
+    handler_cls = type("_BoundMCPHandler", (_MCPHandler,), {"server_token": token})
+    try:
+        httpd = _ThreadingServer((bind, port), handler_cls)
+    except OSError as exc:
+        sys.stderr.write(f"[harness-mcp] failed to bind {bind}:{port}: {exc}\n")
+        return 1
+
+    sys.stderr.write(f"[harness-mcp] listening on http://{bind}:{port}/rpc\n")
+    sys.stderr.write(f"[harness-mcp] token file: {token_path} ({len(token)} chars)\n")
+    sys.stderr.flush()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        sys.stderr.write("\n[harness-mcp] interrupted; shutting down\n")
+    finally:
+        httpd.server_close()
     return 0

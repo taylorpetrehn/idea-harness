@@ -753,6 +753,58 @@ last_touched: <ISO 8601 UTC>                    # bumped on any change
 
 ---
 
+## Mobile app + worktree-runner (Phase 3)
+
+Phase 3 of the bridge plan adds two big pieces:
+
+- **`worktree-runner.sh`** ([`templates/skill-scripts/worktree-runner.sh`](templates/skill-scripts/worktree-runner.sh)) — the build primitive that scripts everything `build-accepted.py` used to describe in prose: read `.harness/config.json`, create a fresh worktree off `origin/<base_branch>`, run env install per declared stack, run smoke, hand off to the builder, run evaluators matched by `when_touched` globs on the changed files, merge results. Tests at [`templates/skill-scripts/worktree-runner.test.sh`](templates/skill-scripts/worktree-runner.test.sh).
+- **Expo mobile app** at [`apps/mobile/`](apps/mobile/) — Inbox / Idea Detail / Decision / PR Status screens over Tailscale HTTPS to the harness MCP server. See [`apps/mobile/README.md`](apps/mobile/README.md) for the screen-by-screen breakdown and dev steps.
+
+### Tailscale setup
+
+```bash
+# 1) Generate a bearer token for the app:
+harness mcp serve --http --token-file ~/.secrets/harness-mobile-token --generate-token
+# Ctrl-C once it logs the bind line — we just wanted the token file.
+
+# 2) Start the server bound to the tailnet IP. Wrap this in a LaunchAgent for production.
+TAILSCALE_IP=$(tailscale ip -4)
+harness mcp serve --http \
+  --bind "$TAILSCALE_IP" --port 7777 \
+  --token-file ~/.secrets/harness-mobile-token
+
+# 3) On the phone (Expo Go or a dev client of apps/mobile/), open Settings:
+#      URL:    http://<tailnet-IP>:7777
+#      Token:  contents of ~/.secrets/harness-mobile-token
+#    Tap "Test connection", then Save.
+```
+
+For an HTTPS funnel URL instead of a raw tailnet IP, wrap with `tailscale serve --https=443 / 127.0.0.1:7777`. The bearer token + URL persist on the phone via `expo-secure-store`. Server-side comparison is constant-time; mismatches return 401.
+
+### `.harness/config.json` schema extension
+
+Phase 3 added an `env_install` block per stack so the worktree-runner knows what to run before smoke:
+
+```json
+"env_install": {
+  "rails": ["bundle install --quiet", "bin/rails db:test:prepare"],
+  "expo":  ["cd mobile && npm ci --silent"],
+  "vite":  ["npm ci --silent"]
+}
+```
+
+Each entry is a list of shell commands run in order from the worktree root. Missing entries are no-ops.
+
+### Verification (Phase 3)
+
+- [ ] `bash templates/skill-scripts/worktree-runner.test.sh` → all 16 helper-fn tests pass
+- [ ] `harness mcp serve --http --token-file <path> --generate-token` produces a token and serves `/health` (200) + `/rpc` (401 unauthed, 200 with bearer)
+- [ ] The mobile app, configured with the URL + token, loads the Inbox and refreshes successfully
+- [ ] Accepting an idea on the phone flips its status to `brainstormed` in `~/.claude/plans/specs/<slug>/idea.md` — verify with `harness ideas show <slug>` on the Mac
+- [ ] `templates/skill-scripts/worktree-runner.sh letsbarker some-slug --dry-run` plans the steps; without `--dry-run` it creates the worktree, runs env install, smoke, and the builder
+
+---
+
 ## Known gotchas
 
 | Gotcha | Fix |
