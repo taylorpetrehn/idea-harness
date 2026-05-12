@@ -1,0 +1,90 @@
+# Drops into <onboarded-repo>/.github/workflows/agent-ready-trigger.yml.
+#
+# Triggers when an issue is labeled `agent:ready`. Posts the issue's
+# title + body into the harness MCP server's `capture` tool over the
+# Tailscale Funnel URL — the next brainstorm cron tick picks it up.
+#
+# Required repo secrets:
+#   HARNESS_FUNNEL_URL   e.g. https://taylor-mac.tail-scale.ts.net
+#   HARNESS_MCP_TOKEN    contents of ~/.secrets/harness-mobile-token on the Mac
+#
+# Phase 4: this replaces the disabled `agent-ready-trigger.yml.disabled`
+# that talked to the old openclaw runtime. The shape of the call is now
+# JSON-RPC 2.0 against `harness mcp serve --http`.
+
+name: agent:ready → harness capture
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  capture:
+    if: github.event.label.name == 'agent:ready'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send capture to harness MCP
+        env:
+          HARNESS_FUNNEL_URL: ${{ secrets.HARNESS_FUNNEL_URL }}
+          HARNESS_MCP_TOKEN: ${{ secrets.HARNESS_MCP_TOKEN }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          PROJECT_KEY: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${HARNESS_FUNNEL_URL:-}" || -z "${HARNESS_MCP_TOKEN:-}" ]]; then
+            echo "::error::HARNESS_FUNNEL_URL and HARNESS_MCP_TOKEN secrets must be set on the repo."
+            exit 1
+          fi
+
+          # Compose a JSON-RPC body. The harness `capture` tool accepts
+          # title / project / notes / source.
+          BODY=$(jq -nc \
+            --arg title "$ISSUE_TITLE" \
+            --arg notes "$ISSUE_BODY" \
+            --arg project "$PROJECT_KEY" \
+            --arg source_url "$ISSUE_URL" \
+            '{
+              jsonrpc: "2.0", id: 1, method: "tools/call",
+              params: {
+                name: "capture",
+                arguments: {
+                  title: $title,
+                  notes: ($notes + "\n\n_via agent:ready label on " + $source_url + "_"),
+                  project: $project,
+                  source: "github-issue"
+                }
+              }
+            }')
+
+          HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST \
+            "${HARNESS_FUNNEL_URL%/}/rpc" \
+            -H "Authorization: Bearer $HARNESS_MCP_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          echo "harness returned $HTTP"
+          cat /tmp/resp.json
+          if [[ "$HTTP" != "200" ]]; then
+            echo "::error::harness MCP returned $HTTP"
+            exit 1
+          fi
+
+      - name: Comment back on issue
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const text = fs.readFileSync('/tmp/resp.json', 'utf-8');
+            const match = text.match(/"slug":\s*"([^"]+)"/);
+            const slug = match ? match[1] : '(slug not in response)';
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🪤 Captured into idea-harness as \`${slug}\`. The next brainstorm cron tick (~1h) will process it.`
+            });

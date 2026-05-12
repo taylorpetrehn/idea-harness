@@ -805,6 +805,87 @@ Each entry is a list of shell commands run in order from the worktree root. Miss
 
 ---
 
+## Cloud workers + GH-issue capture (Phase 4)
+
+Phase 4 of [docs/bridge-plan.md](docs/bridge-plan.md) closes the loop on long-running cloud builds and GitHub-issue-driven capture. Three deliverables:
+
+### 1. Worker abstraction — `harness ideas build --worker {auto,local,gh-action,codespace}`
+
+The `harness ideas build` verb now dispatches to one of three workers, each producing a `PR_URL=<url>`:
+
+| Worker | When it makes sense |
+|---|---|
+| `local` | Mac is online, fast workstation, small/medium PRs. Default. |
+| `gh-action` | Anything bigger than ~15 min, no risk of network drops. Async — the action runs and posts `PR_URL=` back as a PR comment; `harness reconcile` ingests it. |
+| `codespace` | Heavy builds that need a real Linux machine + significant RAM (the gh-action runners cap out at 14 GB). Spins up a Codespace, runs `worktree-runner.sh` there over SSH, cleans up on exit. |
+| `auto` (default) | Respect `.harness/config.json:vcs.default_worker` if set, else `local`. |
+
+Module layout: [`cli/harness/workers/{local,gh_action,codespace}.py`](cli/harness/workers/). The factory at [`cli/harness/workers/__init__.py`](cli/harness/workers/__init__.py) selects by name; `_resolve_worker` in [ideas.py](cli/harness/commands/ideas.py) implements precedence. 9 pytest cases cover selection + factory.
+
+### 2. `agent:ready` GitHub-Issue capture webhook
+
+Drop [`templates/github-workflows/agent-ready-trigger.yml`](templates/github-workflows/agent-ready-trigger.yml) into any onboarded repo's `.github/workflows/`. Labeling an issue `agent:ready` triggers it; it POSTs to `harness mcp serve --http`'s `capture` tool over Tailscale Funnel and comments back the captured slug. Required repo secrets:
+
+- `HARNESS_FUNNEL_URL` — e.g. `https://taylor-mac.tail-scale.ts.net`
+- `HARNESS_MCP_TOKEN` — same bearer token as the mobile app
+
+Replaces the disabled `agent-ready-trigger.yml.disabled` that talked to the OpenClaw runtime (retired in Phase 1).
+
+The build-side workflow, [`templates/github-workflows/claude.yml`](templates/github-workflows/claude.yml), accepts `workflow_dispatch` with an `idea_slug` input. The `gh-action` worker fires this; the workflow fetches `idea.md` from the harness MCP, runs `worktree-runner.sh` in the GH-Action checkout, and is expected to comment `PR_URL=<url>` for `harness reconcile` to ingest.
+
+### 3. `harness reconcile` runs on a 5-minute LaunchAgent
+
+[`templates/skill-scripts/reconcile.py`](templates/skill-scripts/reconcile.py) + [`templates/launchagents/com.taylorpetrehn.idea-harness-reconcile.plist`](templates/launchagents/com.taylorpetrehn.idea-harness-reconcile.plist). Every 5 min the reconcile cron:
+
+- Polls each `pr-open` idea against `gh pr view`.
+- Maps merged → `shipped`, closed → `rejected`.
+- For PRs with change-requests or failing CI: re-dispatches the builder via the same worker that produced the PR (stored in `idea.worker`), unless `reconcile_redispatched_at` is already set (one shot per session, opt-in via `--force-redispatch`).
+
+New CLI flags: `--no-redispatch` (status updates only), `--force-redispatch` (re-dispatch even if already done once).
+
+### Codespace devcontainer
+
+The `codespace` worker requires the target repo to have a devcontainer that bootstraps the harness skill + hooks. See [`templates/codespace/README.md`](templates/codespace/README.md) for `devcontainer.json` and `install-harness.sh` drop-ins. The five operator-control hooks (kill-switch, steer, verify-gate, track-read, commit-on-stop) install into `~/.claude/hooks/` so cloud builds inherit the same steering surface as local ones.
+
+### Setup checklist
+
+```bash
+# 1) Install the reconcile LaunchAgent
+cp templates/launchagents/com.taylorpetrehn.idea-harness-reconcile.plist \
+   ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-reconcile.plist
+
+# 2) For each onboarded repo, drop in the workflows:
+cp templates/github-workflows/agent-ready-trigger.yml \
+   <repo>/.github/workflows/
+cp templates/github-workflows/claude.yml \
+   <repo>/.github/workflows/   # merge with existing claude.yml if any
+
+# 3) Set repo secrets: HARNESS_FUNNEL_URL + HARNESS_MCP_TOKEN
+gh secret set HARNESS_FUNNEL_URL --repo <repo> < your-tailscale-url
+gh secret set HARNESS_MCP_TOKEN --repo <repo> < ~/.secrets/harness-mobile-token
+
+# 4) Per-project default worker (optional — defaults to local):
+# Edit <repo>/.harness/config.json:vcs.default_worker to "gh-action" or "codespace".
+
+# 5) For codespace worker: drop in templates/codespace/install-harness.sh +
+#    devcontainer.json into the target repo's .devcontainer/.
+```
+
+### Verification (Phase 4)
+
+- [ ] `harness ideas build --worker gh-action <slug>` dispatches a `claude.yml` workflow run; `harness reconcile` ingests the eventual `PR_URL=` comment
+- [ ] `harness ideas build --worker codespace <slug>` creates a codespace, runs worktree-runner.sh there, captures `PR_URL=`, deletes the codespace
+- [ ] An issue labeled `agent:ready` in an onboarded repo triggers `agent-ready-trigger.yml` and surfaces as a new `captured` idea in `harness ideas list`
+- [ ] `launchctl list | grep idea-harness-reconcile` shows the cron loaded; `harness reconcile --dry-run` reports which `pr-open` ideas would re-dispatch
+- [ ] `harness ideas build --worker auto <slug>` for a project with `vcs.default_worker: "gh-action"` actually picks gh-action (verifiable via `[harness] worker=gh-action` line in stdout)
+
+### What's deferred (truly out of scope now)
+
+The bridge plan's §Out-of-scope list still stands: multi-repo single ideas, semantic search / embeddings, analytics, Slack/email/iMessage capture, automated PR-review-comment-addressing loops, web UI, multi-tenant, alternative cloud vendors. None of those are Phase 4.
+
+---
+
 ## Known gotchas
 
 | Gotcha | Fix |

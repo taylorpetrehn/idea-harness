@@ -138,12 +138,15 @@ def cmd_brainstorm(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    if args.worker != "local":
-        sys.stderr.write(
-            f"[harness] worker={args.worker!r} is Phase 4; not implemented yet. "
-            "Use --worker local or omit.\n"
-        )
-        return 2
+    """Dispatch a single idea to one of the workers (local / gh-action / codespace).
+
+    Worker selection precedence:
+      1. --worker CLI flag (explicit)
+      2. The project's `.harness/config.json:vcs.default_worker`
+      3. "local"
+    """
+    from .. import workers as workers_pkg
+
     try:
         idea = Idea.from_slug(args.slug)
     except IdeaNotFound as exc:
@@ -155,15 +158,65 @@ def cmd_build(args: argparse.Namespace) -> int:
             "expected brainstormed/accepted/needs-detail.\n"
         )
         return 2
-    script = SKILL_DIR / "scripts" / "build-accepted.py"
-    if not script.is_file():
-        sys.stderr.write(
-            f"[harness] missing build script at {script}; "
-            "the harness skill isn't installed on this machine.\n"
-        )
+
+    worker_name = _resolve_worker(args.worker, idea)
+    try:
+        worker = workers_pkg.get_worker(worker_name)
+    except KeyError as exc:
+        sys.stderr.write(f"[harness] {exc}\n")
         return 2
-    env = os.environ.copy()
-    env["HARNESS_TARGET_SLUG"] = idea.slug
-    sys.stdout.write(f"spawning builder for {idea.slug}…\n")
+    sys.stdout.write(f"[harness] worker={worker_name} for {idea.slug}\n")
     sys.stdout.flush()
-    return subprocess.call([sys.executable, str(script)], env=env)
+    result = worker.build(idea)
+    if result.ok:
+        sys.stdout.write(f"[harness] dispatched ok. pr_url={result.pr_url or '(pending)'}\n")
+        return 0
+    sys.stderr.write(f"[harness] build failed: {result.reason}\n")
+    if result.log_excerpt:
+        sys.stderr.write(result.log_excerpt[-1000:] + "\n")
+    return 1
+
+
+def _resolve_worker(cli_flag: str, idea: Idea) -> str:
+    """Resolve the worker name from the precedence above."""
+    if cli_flag and cli_flag != "auto":
+        return cli_flag
+    # Try the project's .harness/config.json.
+    project = idea.project
+    if project:
+        cfg = _read_project_default_worker(project)
+        if cfg:
+            return cfg
+    return "local"
+
+
+def _read_project_default_worker(project_key: str) -> str | None:
+    """Best-effort: read references/projects.yml → local_path →
+    .harness/config.json:vcs.default_worker."""
+    import json
+    import re
+    from pathlib import Path
+
+    yml = SKILL_DIR / "references" / "projects.yml"
+    if not yml.is_file():
+        return None
+    text = yml.read_text()
+    m = re.search(rf"^\s{{2}}{re.escape(project_key)}:\s*$", text, re.M)
+    if not m:
+        return None
+    body = text[m.end():]
+    next_proj = re.search(r"^\s{2}[A-Za-z0-9_-]+:\s*$", body, re.M)
+    if next_proj:
+        body = body[: next_proj.start()]
+    lp_m = re.search(r"^\s+local_path:\s*[\"']?([^\"'\n]+)[\"']?", body, re.M)
+    if not lp_m:
+        return None
+    local_path = Path(lp_m.group(1).strip()).expanduser()
+    cfg_path = local_path / ".harness" / "config.json"
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+    return ((cfg.get("vcs") or {}).get("default_worker")) or None

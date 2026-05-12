@@ -11,6 +11,8 @@
     "branch_pattern": "idea/{slug-stub}-{id4}",
     "uses_worktrees": true,
     "worktree_pattern": "../LetsBarker-wt-{slug}",
+    "default_worker": "local",
+    "_default_worker_comment": "Phase 4: per-project worker preference. One of local|gh-action|codespace. Used by `harness ideas build` when --worker is 'auto' (the default).",
     "bot": {
       "name": "LetsBarker",
       "email": "269561053+LetsBarker@users.noreply.github.com",
