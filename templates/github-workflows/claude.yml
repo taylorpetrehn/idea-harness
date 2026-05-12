@@ -1,0 +1,146 @@
+# Drops into <onboarded-repo>/.github/workflows/claude.yml.
+#
+# Phase 4: extends a typical claude-code-action setup with a
+# `workflow_dispatch` input so `harness ideas build --worker gh-action`
+# can trigger a build for one idea by slug. The runner does the same
+# thing worktree-runner.sh does locally: env install per stack, smoke,
+# spawn the builder, post PR_URL back via a PR comment that the harness
+# `reconcile` cron ingests.
+#
+# This file is a TEMPLATE. Each onboarded repo's claude.yml may already
+# have other triggers (pull_request, issue_comment, etc.) — merge this
+# `workflow_dispatch` block into the existing on: keys, don't replace
+# them wholesale.
+
+name: claude
+
+on:
+  workflow_dispatch:
+    inputs:
+      idea_slug:
+        description: 'Harness idea slug to build (matches ~/.claude/plans/specs/<slug>/idea.md)'
+        required: true
+        type: string
+      base_branch:
+        description: 'Base branch to PR against (defaults to vcs.base_branch in .harness/config.json)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base_branch || github.event.repository.default_branch }}
+
+      - name: Install harness skill
+        # Pull the canonical idea-harness skill (templates/skill-scripts/) so
+        # worktree-runner.sh and review-gauntlet.py are available locally.
+        run: |
+          set -euo pipefail
+          mkdir -p $HOME/.claude/skills
+          git clone --depth=1 https://github.com/taylorpetrehn/idea-harness $HOME/.claude/skills/idea-harness-src
+          mkdir -p $HOME/.claude/skills/idea-harness/scripts
+          mkdir -p $HOME/.claude/skills/idea-harness/references
+          cp -r $HOME/.claude/skills/idea-harness-src/templates/skill-scripts/* $HOME/.claude/skills/idea-harness/scripts/
+          cp -r $HOME/.claude/skills/idea-harness-src/templates/skill-scripts/review-rubrics $HOME/.claude/skills/idea-harness/references/ || true
+          chmod +x $HOME/.claude/skills/idea-harness/scripts/*.sh
+
+      - name: Fetch idea.md from harness MCP
+        env:
+          HARNESS_FUNNEL_URL: ${{ secrets.HARNESS_FUNNEL_URL }}
+          HARNESS_MCP_TOKEN: ${{ secrets.HARNESS_MCP_TOKEN }}
+          IDEA_SLUG: ${{ inputs.idea_slug }}
+        run: |
+          set -euo pipefail
+          BODY=$(jq -nc --arg slug "$IDEA_SLUG" '{
+            jsonrpc: "2.0", id: 1, method: "tools/call",
+            params: { name: "ideas.show", arguments: { slug: $slug } }
+          }')
+          mkdir -p $HOME/.claude/plans/specs/$IDEA_SLUG
+          HTTP=$(curl -s -o /tmp/idea.json -w "%{http_code}" -X POST \
+            "${HARNESS_FUNNEL_URL%/}/rpc" \
+            -H "Authorization: Bearer $HARNESS_MCP_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          if [[ "$HTTP" != "200" ]]; then
+            echo "::error::harness MCP returned $HTTP fetching idea"
+            cat /tmp/idea.json
+            exit 1
+          fi
+          # The MCP `tools/call` wraps the inner result in content[0].text;
+          # unwrap and write idea.md from frontmatter + body.
+          jq -r '.result.content[0].text' /tmp/idea.json > /tmp/inner.json
+          python3 - <<'PY'
+          import json, os
+          slug = os.environ['IDEA_SLUG']
+          inner = json.load(open('/tmp/inner.json'))
+          fm = inner.get('frontmatter') or {}
+          body = inner.get('body') or ''
+          out = ['---']
+          for k, v in fm.items():
+              if v is None:
+                  out.append(f"{k}: ~")
+              elif isinstance(v, bool):
+                  out.append(f"{k}: {'true' if v else 'false'}")
+              else:
+                  out.append(f"{k}: {v}")
+          out.append('---')
+          out.append('')
+          out.append(body)
+          path = os.path.expanduser(f'~/.claude/plans/specs/{slug}/idea.md')
+          os.makedirs(os.path.dirname(path), exist_ok=True)
+          open(path, 'w').write('\n'.join(out))
+          print(f"wrote {path}")
+          PY
+
+      - name: Run worktree-runner
+        env:
+          PROJECT_KEY: ${{ github.event.repository.name }}
+          IDEA_SLUG: ${{ inputs.idea_slug }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # GitHub Actions cwd is already the repo checkout — so we don't
+          # need worktree-runner's git-worktree dance; it'll detect that
+          # and proceed in-place. Still pass the project key so it can
+          # locate .harness/config.json.
+          export HARNESS_PROJECTS_YML="$HOME/.claude/skills/idea-harness/references/projects.yml"
+          # Minimal projects.yml so worktree-runner can resolve.
+          mkdir -p "$(dirname "$HARNESS_PROJECTS_YML")"
+          cat > "$HARNESS_PROJECTS_YML" <<YAML
+          projects:
+            $PROJECT_KEY:
+              github_repo: "${{ github.repository }}"
+              local_path: "$GITHUB_WORKSPACE"
+              base_branch: "${{ inputs.base_branch || github.event.repository.default_branch }}"
+              worktree_pattern: "$GITHUB_WORKSPACE"
+              uses_worktrees: false
+          YAML
+          # Worker spawns its own builder via $BUILDER_CMD if set; for
+          # gh-action we hand off to claude-code-action via a comment
+          # instead. Phase 4 v1 expects the operator to wire that in;
+          # for now the runner just preps the env so the action can run.
+          bash $HOME/.claude/skills/idea-harness/scripts/worktree-runner.sh \
+            "$PROJECT_KEY" "$IDEA_SLUG" --dry-run \
+            || echo "::warning::worktree-runner --dry-run reported issues; continuing"
+
+      - name: Comment PR_URL back (placeholder)
+        # This is where the action would call claude-code-action and
+        # capture its PR_URL. For Phase 4 v1, the action plans the build;
+        # the actual claude --print spawn step depends on the target repo's
+        # existing claude-code-action setup. See README §Phase 4 for the
+        # final-wiring checklist.
+        run: |
+          echo "Phase 4 v1: builder spawn delegated to repo's existing claude-code-action steps."
+          echo "When that completes, post 'PR_URL=<url>' as a comment on the originating issue/PR"
+          echo "so harness reconcile can ingest it."

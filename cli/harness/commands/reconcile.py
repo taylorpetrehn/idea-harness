@@ -38,6 +38,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
     sys.stdout.write(f"reconciling {len(pr_open)} pr-open idea(s)…\n")
     changed = 0
+    redispatched = 0
     for idea in pr_open:
         pr_url = idea.get("github_pr") or ""
         if not pr_url or "/pull/" not in pr_url:
@@ -47,24 +48,71 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         if not meta:
             sys.stdout.write(f"  ! {idea.slug}: gh pr view failed for {pr_url}\n")
             continue
-        new_status, note = _classify(meta)
-        if new_status == idea.status:
+        new_status, note, should_redispatch = _classify(meta)
+
+        if new_status != idea.status:
+            sys.stdout.write(f"  → {idea.slug}: {idea.status} → {new_status}\n")
+            if not args.dry_run:
+                idea.set_status(new_status)
+                if note:
+                    idea.append_note(note)
+                idea.save()
+                changed += 1
+        elif should_redispatch:
+            # Phase 4: same status (pr-open), but the PR has change requests
+            # or failing CI. Re-dispatch the builder via the same worker.
+            already = idea.get("reconcile_redispatched_at")
+            if already and not args.force_redispatch:
+                sys.stdout.write(
+                    f"  · {idea.slug}: already re-dispatched at {already}; skipping "
+                    "(pass --force-redispatch to re-trigger)\n"
+                )
+                continue
+            if args.no_redispatch:
+                sys.stdout.write(f"  · {idea.slug}: {note} (re-dispatch disabled via --no-redispatch)\n")
+                if note and not args.dry_run:
+                    idea.append_note(note)
+                    idea.save()
+                continue
+            worker_name = idea.get("worker") or "local"
+            sys.stdout.write(f"  ↻ {idea.slug}: re-dispatch via worker={worker_name} ({note})\n")
+            if args.dry_run:
+                continue
+            ok = _redispatch(idea, worker_name)
+            idea.set(reconcile_redispatched_at=now_iso(), reconcile_redispatch_reason=note)
+            if note:
+                idea.append_note(f"reconcile re-dispatched ({worker_name}): {note}")
+            idea.save()
+            if ok:
+                redispatched += 1
+        else:
             sys.stdout.write(f"  · {idea.slug}: {idea.status} (no change)\n")
-            continue
-        sys.stdout.write(f"  → {idea.slug}: {idea.status} → {new_status}\n")
-        if args.dry_run:
-            continue
-        idea.set_status(new_status)
-        if note:
-            idea.append_note(note)
-        idea.save()
-        changed += 1
 
     if args.dry_run:
-        sys.stdout.write(f"\ndry-run: would have changed {len(pr_open) - changed} ideas (rerun without --dry-run).\n")
+        sys.stdout.write(f"\ndry-run: would have changed {changed} ideas, re-dispatched {redispatched}.\n")
     else:
-        sys.stdout.write(f"\nchanged {changed} of {len(pr_open)} ideas\n")
+        sys.stdout.write(f"\nchanged {changed}, re-dispatched {redispatched} (of {len(pr_open)} pr-open)\n")
     return 0
+
+
+def _redispatch(idea: Idea, worker_name: str) -> bool:
+    """Re-spawn the builder via the named worker. Errors are non-fatal —
+    reconcile keeps running for the other ideas."""
+    try:
+        from .. import workers as workers_pkg
+        worker = workers_pkg.get_worker(worker_name)
+    except KeyError as exc:
+        sys.stderr.write(f"[reconcile] unknown worker {worker_name!r}: {exc}\n")
+        return False
+    try:
+        result = worker.build(idea)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[reconcile] worker {worker_name!r} crashed: {exc!r}\n")
+        return False
+    if not result.ok:
+        sys.stderr.write(f"[reconcile] re-dispatch via {worker_name} failed: {result.reason}\n")
+        return False
+    return True
 
 
 def _gh_pr_meta(pr_url: str) -> dict[str, Any] | None:
@@ -86,18 +134,27 @@ def _gh_pr_meta(pr_url: str) -> dict[str, Any] | None:
         return None
 
 
-def _classify(meta: dict[str, Any]) -> tuple[str, str | None]:
+def _classify(meta: dict[str, Any]) -> tuple[str, str | None, bool]:
+    """Return (new_status, note, should_redispatch).
+
+    `should_redispatch` is True for the open-with-change-requests and
+    open-with-failing-CI cases; reconcile uses it (Phase 4) to fire
+    the builder one more time so the agent can address the comments.
+    """
     state = (meta.get("state") or "").upper()
     if state == "MERGED" or meta.get("mergedAt"):
         ts = meta.get("mergedAt") or now_iso()
-        return "shipped", f"PR merged at {ts}"
+        return "shipped", f"PR merged at {ts}", False
     if state == "CLOSED":
-        return "rejected", "PR closed without merge"
+        return "rejected", "PR closed without merge", False
     review = meta.get("reviewDecision")
     checks = meta.get("statusCheckRollup") or []
-    failing = [c for c in checks if (c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "CANCELLED")]
+    failing = [
+        c for c in checks
+        if (c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "CANCELLED")
+    ]
     if review == "CHANGES_REQUESTED":
-        return "pr-open", "change requests on PR (reconcile detected)"
+        return "pr-open", "change requests on PR (reconcile detected)", True
     if failing:
-        return "pr-open", f"{len(failing)} required check(s) failing (reconcile detected)"
-    return "pr-open", None
+        return "pr-open", f"{len(failing)} required check(s) failing (reconcile detected)", True
+    return "pr-open", None, False

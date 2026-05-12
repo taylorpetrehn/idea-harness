@@ -69,13 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_reroute.add_argument("--note", help="Optional note appended to ## Notes.")
     p_reroute.set_defaults(_handler=ideas_cmd.cmd_reroute)
 
-    p_build = ideas_sub.add_parser("build", help="Manually trigger build-accepted.py for one idea.")
+    p_build = ideas_sub.add_parser("build", help="Manually trigger a build for one idea via the chosen worker.")
     p_build.add_argument("slug")
     p_build.add_argument(
         "--worker",
-        default="local",
-        choices=("local", "gh-action", "codespace"),
-        help="Worker backend (Phase 4: gh-action/codespace; for now only 'local').",
+        default="auto",
+        choices=("auto", "local", "gh-action", "codespace"),
+        help=(
+            "Worker backend. Default 'auto' means: respect "
+            ".harness/config.json:vcs.default_worker if set, else local. "
+            "(Phase 4: gh-action and codespace.)"
+        ),
     )
     p_build.set_defaults(_handler=ideas_cmd.cmd_build)
 
@@ -116,12 +120,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_reconcile = sub.add_parser(
         "reconcile",
-        help="Poll pr-open ideas and update status from GitHub (merged → shipped, etc.).",
+        help="Poll pr-open ideas, update status, and re-dispatch builders for stuck PRs.",
     )
     p_reconcile.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report what would change without writing.",
+        help="Report what would change without writing or re-dispatching.",
+    )
+    p_reconcile.add_argument(
+        "--no-redispatch",
+        action="store_true",
+        help="Skip the Phase-4 re-dispatch step; only update statuses.",
+    )
+    p_reconcile.add_argument(
+        "--force-redispatch",
+        action="store_true",
+        help="Re-dispatch even if reconcile_redispatched_at is already set on the idea.",
     )
     p_reconcile.set_defaults(_handler=reconcile_cmd.cmd_reconcile)
 
