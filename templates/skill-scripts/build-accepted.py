@@ -83,9 +83,13 @@ Then for the BUILD step:
 
 8. Parse the spawn's output for PR_URL=<url>. On success: update the idea's frontmatter to status: pr-open, set github_pr to the URL, append a "## PR" section to the idea body with the URL. On PR_FAILED or absence of PR_URL: revert status to brainstormed, append a Notes entry pointing at build.log.
 
-9. If uses_worktrees AND the build succeeded, remove the worktree (gh pr branch is now on origin).
+9. Run the review gauntlet (only if PR_URL was parsed in step 8). Use the Bash tool to invoke ~/.claude/skills/idea-harness/scripts/review-gauntlet.py:
+       bash -lc "python3 ~/.claude/skills/idea-harness/scripts/review-gauntlet.py --pr <pr_number_from_url> --repo {project.github_repo} --spec ~/.claude/plans/specs/<slug>/idea.md --idea-slug <slug> --cwd <build_path> >> ~/.claude/skills/idea-harness/logs/gauntlet.log 2>&1 || true"
+   The gauntlet waits up to 5 minutes for required CI to settle, then runs four parallel reviewers (spec-fidelity, codebase-patterns, risk; plus ux if the PR touches UI files) and posts an aggregated comment on the PR. It writes review.json next to idea.md. The gauntlet does NOT block on changes_requested — it just records the verdict for Taylor's eyes. If the script is missing (older installs without the Phase 1 ports), the `|| true` swallows the error — skip silently. If it errors at runtime, the log captures the stderr but we continue. Do NOT revert the PR_URL state because the gauntlet failed.
 
-10. Send a single ntfy notification: `curl -s -d "Harness · built {title}: {pr_url}" ntfy.sh/taylor-barker` on success, or `curl -s -d "Harness · build FAILED for {title} — see {build.log}" ntfy.sh/taylor-barker` on failure.
+10. If uses_worktrees AND the build succeeded, remove the worktree (gh pr branch is now on origin).
+
+11. Send a single ntfy notification: `curl -s -d "Harness · built {title}: {pr_url}" ntfy.sh/taylor-barker` on success, or `curl -s -d "Harness · build FAILED for {title} — see {build.log}" ntfy.sh/taylor-barker` on failure.
 
 Process ONE idea per invocation. Do not loop to the next brainstormed idea — the next cron tick handles it. This bounds cost per tick.
 
