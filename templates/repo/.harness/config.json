@@ -11,6 +11,8 @@
     "branch_pattern": "idea/{slug-stub}-{id4}",
     "uses_worktrees": true,
     "worktree_pattern": "../LetsBarker-wt-{slug}",
+    "default_worker": "local",
+    "_default_worker_comment": "Phase 4: per-project worker preference. One of local|gh-action|codespace. Used by `harness ideas build` when --worker is 'auto' (the default).",
     "bot": {
       "name": "LetsBarker",
       "email": "269561053+LetsBarker@users.noreply.github.com",
@@ -26,6 +28,13 @@
     "test_mobile": "cd mobile && npm test -- --watchAll=false",
     "lint":        "bundle exec rubocop",
     "dev_server":  "bin/dev"
+  },
+
+  "env_install": {
+    "_comment": "Per-stack environment install. Each entry is a list of shell commands run in order from build_path before smoke. Phase 3 (worktree-runner.sh) executes these. If a stack key is missing, no-op for that stack. Keep commands fast (< 90s when warm) and idempotent — they run on every build, in cold worktrees too.",
+    "rails":  ["bundle install --quiet", "bin/rails db:test:prepare"],
+    "expo":   ["cd mobile && npm ci --silent"],
+    "vite":   ["npm ci --silent"]
   },
 
   "evidence": {

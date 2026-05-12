@@ -42,6 +42,7 @@ Hey Siri, add to App Ideas
 - [Onboarding an existing project](#onboarding-an-existing-project)
 - [Operations](#operations)
 - [Reference](#reference)
+- [Claude Code 2.1.139 integration](#claude-code-21139-integration)
 - [Known gotchas](#known-gotchas)
 - [Migration](#migration)
 
@@ -750,6 +751,174 @@ last_touched: <ISO 8601 UTC>                    # bumped on any change
 ├── CLAUDE.md (or .claude/CLAUDE.md)             ← human-readable conventions
 └── .claude/                                     ← optional, hooks/agents per repo
 ```
+
+---
+
+## Mobile app + worktree-runner (Phase 3)
+
+Phase 3 of the bridge plan adds two big pieces:
+
+- **`worktree-runner.sh`** ([`templates/skill-scripts/worktree-runner.sh`](templates/skill-scripts/worktree-runner.sh)) — the build primitive that scripts everything `build-accepted.py` used to describe in prose: read `.harness/config.json`, create a fresh worktree off `origin/<base_branch>`, run env install per declared stack, run smoke, hand off to the builder, run evaluators matched by `when_touched` globs on the changed files, merge results. Tests at [`templates/skill-scripts/worktree-runner.test.sh`](templates/skill-scripts/worktree-runner.test.sh).
+- **Expo mobile app** at [`apps/mobile/`](apps/mobile/) — Inbox / Idea Detail / Decision / PR Status screens over Tailscale HTTPS to the harness MCP server. See [`apps/mobile/README.md`](apps/mobile/README.md) for the screen-by-screen breakdown and dev steps.
+
+### Tailscale setup
+
+```bash
+# 1) Generate a bearer token for the app:
+harness mcp serve --http --token-file ~/.secrets/harness-mobile-token --generate-token
+# Ctrl-C once it logs the bind line — we just wanted the token file.
+
+# 2) Start the server bound to the tailnet IP. Wrap this in a LaunchAgent for production.
+TAILSCALE_IP=$(tailscale ip -4)
+harness mcp serve --http \
+  --bind "$TAILSCALE_IP" --port 7777 \
+  --token-file ~/.secrets/harness-mobile-token
+
+# 3) On the phone (Expo Go or a dev client of apps/mobile/), open Settings:
+#      URL:    http://<tailnet-IP>:7777
+#      Token:  contents of ~/.secrets/harness-mobile-token
+#    Tap "Test connection", then Save.
+```
+
+For an HTTPS funnel URL instead of a raw tailnet IP, wrap with `tailscale serve --https=443 / 127.0.0.1:7777`. The bearer token + URL persist on the phone via `expo-secure-store`. Server-side comparison is constant-time; mismatches return 401.
+
+### `.harness/config.json` schema extension
+
+Phase 3 added an `env_install` block per stack so the worktree-runner knows what to run before smoke:
+
+```json
+"env_install": {
+  "rails": ["bundle install --quiet", "bin/rails db:test:prepare"],
+  "expo":  ["cd mobile && npm ci --silent"],
+  "vite":  ["npm ci --silent"]
+}
+```
+
+Each entry is a list of shell commands run in order from the worktree root. Missing entries are no-ops.
+
+### Verification (Phase 3)
+
+- [ ] `bash templates/skill-scripts/worktree-runner.test.sh` → all 16 helper-fn tests pass
+- [ ] `harness mcp serve --http --token-file <path> --generate-token` produces a token and serves `/health` (200) + `/rpc` (401 unauthed, 200 with bearer)
+- [ ] The mobile app, configured with the URL + token, loads the Inbox and refreshes successfully
+- [ ] Accepting an idea on the phone flips its status to `brainstormed` in `~/.claude/plans/specs/<slug>/idea.md` — verify with `harness ideas show <slug>` on the Mac
+- [ ] `templates/skill-scripts/worktree-runner.sh letsbarker some-slug --dry-run` plans the steps; without `--dry-run` it creates the worktree, runs env install, smoke, and the builder
+
+---
+
+## Cloud workers + GH-issue capture (Phase 4)
+
+Phase 4 of [docs/bridge-plan.md](docs/bridge-plan.md) closes the loop on long-running cloud builds and GitHub-issue-driven capture. Three deliverables:
+
+### 1. Worker abstraction — `harness ideas build --worker {auto,local,gh-action,codespace}`
+
+The `harness ideas build` verb now dispatches to one of three workers, each producing a `PR_URL=<url>`:
+
+| Worker | When it makes sense |
+|---|---|
+| `local` | Mac is online, fast workstation, small/medium PRs. Default. |
+| `gh-action` | Anything bigger than ~15 min, no risk of network drops. Async — the action runs and posts `PR_URL=` back as a PR comment; `harness reconcile` ingests it. |
+| `codespace` | Heavy builds that need a real Linux machine + significant RAM (the gh-action runners cap out at 14 GB). Spins up a Codespace, runs `worktree-runner.sh` there over SSH, cleans up on exit. |
+| `auto` (default) | Respect `.harness/config.json:vcs.default_worker` if set, else `local`. |
+
+Module layout: [`cli/harness/workers/{local,gh_action,codespace}.py`](cli/harness/workers/). The factory at [`cli/harness/workers/__init__.py`](cli/harness/workers/__init__.py) selects by name; `_resolve_worker` in [ideas.py](cli/harness/commands/ideas.py) implements precedence. 9 pytest cases cover selection + factory.
+
+### 2. `agent:ready` GitHub-Issue capture webhook
+
+Drop [`templates/github-workflows/agent-ready-trigger.yml`](templates/github-workflows/agent-ready-trigger.yml) into any onboarded repo's `.github/workflows/`. Labeling an issue `agent:ready` triggers it; it POSTs to `harness mcp serve --http`'s `capture` tool over Tailscale Funnel and comments back the captured slug. Required repo secrets:
+
+- `HARNESS_FUNNEL_URL` — e.g. `https://taylor-mac.tail-scale.ts.net`
+- `HARNESS_MCP_TOKEN` — same bearer token as the mobile app
+
+Replaces the disabled `agent-ready-trigger.yml.disabled` that talked to the OpenClaw runtime (retired in Phase 1).
+
+The build-side workflow, [`templates/github-workflows/claude.yml`](templates/github-workflows/claude.yml), accepts `workflow_dispatch` with an `idea_slug` input. The `gh-action` worker fires this; the workflow fetches `idea.md` from the harness MCP, runs `worktree-runner.sh` in the GH-Action checkout, and is expected to comment `PR_URL=<url>` for `harness reconcile` to ingest.
+
+### 3. `harness reconcile` runs on a 5-minute LaunchAgent
+
+[`templates/skill-scripts/reconcile.py`](templates/skill-scripts/reconcile.py) + [`templates/launchagents/com.taylorpetrehn.idea-harness-reconcile.plist`](templates/launchagents/com.taylorpetrehn.idea-harness-reconcile.plist). Every 5 min the reconcile cron:
+
+- Polls each `pr-open` idea against `gh pr view`.
+- Maps merged → `shipped`, closed → `rejected`.
+- For PRs with change-requests or failing CI: re-dispatches the builder via the same worker that produced the PR (stored in `idea.worker`), unless `reconcile_redispatched_at` is already set (one shot per session, opt-in via `--force-redispatch`).
+
+New CLI flags: `--no-redispatch` (status updates only), `--force-redispatch` (re-dispatch even if already done once).
+
+### Codespace devcontainer
+
+The `codespace` worker requires the target repo to have a devcontainer that bootstraps the harness skill + hooks. See [`templates/codespace/README.md`](templates/codespace/README.md) for `devcontainer.json` and `install-harness.sh` drop-ins. The five operator-control hooks (kill-switch, steer, verify-gate, track-read, commit-on-stop) install into `~/.claude/hooks/` so cloud builds inherit the same steering surface as local ones.
+
+### Setup checklist
+
+```bash
+# 1) Install the reconcile LaunchAgent
+cp templates/launchagents/com.taylorpetrehn.idea-harness-reconcile.plist \
+   ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-reconcile.plist
+
+# 2) For each onboarded repo, drop in the workflows:
+cp templates/github-workflows/agent-ready-trigger.yml \
+   <repo>/.github/workflows/
+cp templates/github-workflows/claude.yml \
+   <repo>/.github/workflows/   # merge with existing claude.yml if any
+
+# 3) Set repo secrets: HARNESS_FUNNEL_URL + HARNESS_MCP_TOKEN
+gh secret set HARNESS_FUNNEL_URL --repo <repo> < your-tailscale-url
+gh secret set HARNESS_MCP_TOKEN --repo <repo> < ~/.secrets/harness-mobile-token
+
+# 4) Per-project default worker (optional — defaults to local):
+# Edit <repo>/.harness/config.json:vcs.default_worker to "gh-action" or "codespace".
+
+# 5) For codespace worker: drop in templates/codespace/install-harness.sh +
+#    devcontainer.json into the target repo's .devcontainer/.
+```
+
+### Verification (Phase 4)
+
+- [ ] `harness ideas build --worker gh-action <slug>` dispatches a `claude.yml` workflow run; `harness reconcile` ingests the eventual `PR_URL=` comment
+- [ ] `harness ideas build --worker codespace <slug>` creates a codespace, runs worktree-runner.sh there, captures `PR_URL=`, deletes the codespace
+- [ ] An issue labeled `agent:ready` in an onboarded repo triggers `agent-ready-trigger.yml` and surfaces as a new `captured` idea in `harness ideas list`
+- [ ] `launchctl list | grep idea-harness-reconcile` shows the cron loaded; `harness reconcile --dry-run` reports which `pr-open` ideas would re-dispatch
+- [ ] `harness ideas build --worker auto <slug>` for a project with `vcs.default_worker: "gh-action"` actually picks gh-action (verifiable via `[harness] worker=gh-action` line in stdout)
+
+### What's deferred (truly out of scope now)
+
+The bridge plan's §Out-of-scope list still stands: multi-repo single ideas, semantic search / embeddings, analytics, Slack/email/iMessage capture, automated PR-review-comment-addressing loops, web UI, multi-tenant, alternative cloud vendors. None of those are Phase 4.
+
+---
+
+## Claude Code 2.1.139 integration
+
+Phase 5 wires the harness up to five Claude Code 2.1.139 features. None of them are mandatory — every piece degrades gracefully on older Claude binaries — but each one trims a wart that previously lived in this codebase.
+
+| Feature | Where it shows up | What it replaces |
+|---|---|---|
+| `/goal` | `templates/skill-scripts/build-accepted.py` (SEED step 6) + `templates/skill-scripts/worktree-runner.sh` | The hand-rolled "turn ≤ N" Ralph loop that used to live in `worktree-runner.sh`. The builder is now spawned with `/goal "PR open on branch X against main with passing CI"` prepended, and Claude Code's own goal loop decides when to stop. |
+| `claude agents --json` | New MCP tool `agents.list` in `cli/harness/commands/mcp_server.py`; Expo Inbox renders "active sessions" via `useAgents()` in `apps/mobile/src/lib/mcp.ts` | The Inbox used to surface only `idea.md` frontmatter state; now it shows the actual running/blocked agent sessions alongside ideas, so you can tell at a glance whether a `building` idea actually has a session in flight. |
+| `CLAUDE_PROJECT_DIR` | `harness init-harness` (defaults `.` to `$CLAUDE_PROJECT_DIR` when set); `_log_env_context()` in the stdio MCP server logs it at startup | `init-harness` no longer requires `--repo-path` when invoked from a Claude Code session — the harness picks up the project root the host already knows about. |
+| `continueOnBlock: true` | `.claude/settings.json` (root) `verify-gate.sh`; `templates/repo/settings.json` (`safety-check.sh`) | A blocked Write/Edit used to hard-stop the turn. With `continueOnBlock`, the gate's rejection message is fed back to the agent as a tool result so it can retry (add a screenshot, ask the user to drop `.harness/.allow-once`, etc.) instead of dying. On Claude Code < 2.1.139 the key is silently ignored — same hard-stop behavior as before. |
+| `ANTHROPIC_API_KEY` warning | `harness init-harness` prints a stderr warning when the var is set; the stdio MCP server logs the same hint at startup (when `HARNESS_MCP_DEBUG` is set) | The harness's escalation flow depends on `claude --remote-control`, `/schedule`, and claude.ai MCP connectors — all three are disabled when `ANTHROPIC_API_KEY` short-circuits the claude.ai login. Onboarding now flags this loudly. |
+
+### Smoke-checking the integration
+
+```bash
+# 1. /goal threading
+grep '"/goal' templates/skill-scripts/build-accepted.py templates/skill-scripts/worktree-runner.sh
+
+# 2. agents.list MCP tool registered
+python3 -c "from harness.commands.mcp_server import TOOL_REGISTRY; print('agents.list' in TOOL_REGISTRY)"
+
+# 3. CLAUDE_PROJECT_DIR fallback
+CLAUDE_PROJECT_DIR=/tmp/some-repo harness init-harness . | head -2
+
+# 4. continueOnBlock present
+python3 -c "import json; s=json.load(open('.claude/settings.json')); print([h for g in s['hooks']['PreToolUse'] for h in g['hooks'] if h.get('continueOnBlock')])"
+
+# 5. API-key warning
+ANTHROPIC_API_KEY=sk-test harness init-harness . 2>&1 | grep -A1 'ANTHROPIC_API_KEY is set'
+```
+
+The pytest suite covers all five in `cli/tests/test_cli_2_1_139.py`.
 
 ---
 

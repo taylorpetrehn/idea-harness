@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Drop this at .claude/settings.json in an onboarded repo. The safety-check.sh",
+    "hook reads .harness/config.json to decide what to block. `continueOnBlock: true`",
+    "(Claude Code 2.1.139+) makes block decisions feed back to the agent as a tool",
+    "result instead of hard-stopping the turn — the model sees the rejection message",
+    "and can adjust (e.g. ask the user for `.harness/.allow-once`) instead of dying.",
+    "On Claude Code < 2.1.139 the key is silently ignored; behavior degrades to hard-stop."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/safety-check.sh",
+            "continueOnBlock": true
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -69,13 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_reroute.add_argument("--note", help="Optional note appended to ## Notes.")
     p_reroute.set_defaults(_handler=ideas_cmd.cmd_reroute)
 
-    p_build = ideas_sub.add_parser("build", help="Manually trigger build-accepted.py for one idea.")
+    p_build = ideas_sub.add_parser("build", help="Manually trigger a build for one idea via the chosen worker.")
     p_build.add_argument("slug")
     p_build.add_argument(
         "--worker",
-        default="local",
-        choices=("local", "gh-action", "codespace"),
-        help="Worker backend (Phase 4: gh-action/codespace; for now only 'local').",
+        default="auto",
+        choices=("auto", "local", "gh-action", "codespace"),
+        help=(
+            "Worker backend. Default 'auto' means: respect "
+            ".harness/config.json:vcs.default_worker if set, else local. "
+            "(Phase 4: gh-action and codespace.)"
+        ),
     )
     p_build.set_defaults(_handler=ideas_cmd.cmd_build)
 
@@ -116,21 +120,47 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_reconcile = sub.add_parser(
         "reconcile",
-        help="Poll pr-open ideas and update status from GitHub (merged → shipped, etc.).",
+        help="Poll pr-open ideas, update status, and re-dispatch builders for stuck PRs.",
     )
     p_reconcile.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report what would change without writing.",
+        help="Report what would change without writing or re-dispatching.",
+    )
+    p_reconcile.add_argument(
+        "--no-redispatch",
+        action="store_true",
+        help="Skip the Phase-4 re-dispatch step; only update statuses.",
+    )
+    p_reconcile.add_argument(
+        "--force-redispatch",
+        action="store_true",
+        help="Re-dispatch even if reconcile_redispatched_at is already set on the idea.",
     )
     p_reconcile.set_defaults(_handler=reconcile_cmd.cmd_reconcile)
 
     # ----- harness mcp serve
     from .commands import mcp_server as mcp_cmd
 
-    p_mcp = sub.add_parser("mcp", help="MCP transport for Claude Code / future mobile.")
+    p_mcp = sub.add_parser("mcp", help="MCP transport for Claude Code + the Phase 3 mobile app.")
     mcp_sub = p_mcp.add_subparsers(dest="mcp_verb", metavar="ACTION")
-    p_serve = mcp_sub.add_parser("serve", help="JSON-RPC 2.0 stdio server. HTTP+Tailscale deferred to Phase 3.")
+    p_serve = mcp_sub.add_parser(
+        "serve",
+        help="JSON-RPC 2.0 server. Default: stdio (for Claude Code .mcp.json). --http: bind a port for the mobile app.",
+    )
+    p_serve.add_argument("--http", action="store_true", help="Use HTTP+bearer-token transport instead of stdio.")
+    p_serve.add_argument("--bind", default="127.0.0.1", help="HTTP bind address (default: 127.0.0.1). Set to a Tailscale tailnet IP for mobile.")
+    p_serve.add_argument("--port", type=int, default=7777, help="HTTP port (default: 7777).")
+    p_serve.add_argument(
+        "--token-file",
+        default=None,
+        help="Path to a file containing the bearer token. Required with --http.",
+    )
+    p_serve.add_argument(
+        "--generate-token",
+        action="store_true",
+        help="Generate a 32-byte token at --token-file if missing.",
+    )
     p_serve.set_defaults(_handler=mcp_cmd.cmd_serve)
 
     return parser

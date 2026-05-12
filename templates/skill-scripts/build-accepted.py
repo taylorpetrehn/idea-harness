@@ -60,11 +60,11 @@ Then for the BUILD step:
 
 3. Validate handoff (references/handoff-to-build.md): all required frontmatter fields present, brainstorm has the chosen variant marked. If invalid, revert status to brainstormed (or its current state) with a Notes entry explaining what's missing, and continue to the next idea.
 
-4. Set up the build path (worktree-aware):
-   - If `project.vcs.uses_worktrees` is true: create a fresh worktree from origin. The build_path is the new worktree; the dirty state of `project.local_path` (the main checkout) is irrelevant and must NOT block the build.
-       bash -lc "cd {project.local_path} && git fetch origin && git worktree add {project.worktree_pattern} -B idea/{slug-stub}-{id4} origin/{project.vcs.base_branch}"
-     where `slug-stub` is the first ~30 chars of the idea's slug (with the trailing -id4 suffix dropped) and `{id4}` is the last 4 hex chars.
-   - If `project.vcs.uses_worktrees` is false: build_path is `project.local_path` itself. Run `bash -lc "cd {project.local_path} && git status --porcelain"`. If non-empty, append a Notes entry, do NOT proceed; continue to next idea.
+4. (Phase 3) Delegate the worktree + env install + smoke + builder hand-off to ~/.claude/skills/idea-harness/scripts/worktree-runner.sh. Compose the builder seed prompt (step 5 below) and write it to a temp file, then invoke:
+       bash -lc "BUILDER_SEED_FILE=/tmp/build-seed-{slug}.md ~/.claude/skills/idea-harness/scripts/worktree-runner.sh {project} {slug}"
+   The runner reads `.harness/config.json:env_install` for the project's stacks and runs them in order, then runs `commands.smoke`, then spawns `claude --print` with the seed inside the worktree. Stdout is tee'd to spec_dir/build.log.
+   - If the runner is missing (older installs): fall back to the inline worktree-create logic — `bash -lc "cd {project.local_path} && git fetch origin && git worktree add {project.worktree_pattern} -B idea/{slug-stub}-{id4} origin/{project.vcs.base_branch}"`, then run env install + smoke + spawn the builder yourself.
+   - If `project.vcs.uses_worktrees` is false: skip worktree creation; build_path is `project.local_path`. Refuse if it has a dirty working tree.
 
 5. Update the idea's frontmatter: status: building, set last_touched. Use a single Edit call.
 
@@ -78,6 +78,7 @@ Then for the BUILD step:
      - The full content of the project's conventions.md (resolved per SKILL.md's "Per-project context resolution" rule — repo-side {local_path}/{conventions_path} if set and present, else references/context/{name}/conventions.md)
      - The bot identity setup commands (from project.vcs.bot)
      - Instructions: implement on a feature branch, run project.commands.test_*, commit with descriptive message, push using the bot PAT, gh pr create against base_branch, print exactly one line `PR_URL=<url>` on success or `PR_FAILED=<reason>` on any failure. Never push to base_branch directly. Never use --no-verify.
+     - Claude Code 2.1.139+: prepend the seed with `/goal "PR open with passing CI on {branch}"` so Claude Code runs its own iteration loop until the goal is reached or it gives up. The harness no longer hand-rolls a turn counter; /goal handles convergence and signals completion when the PR is open and CI is green. If /goal isn't available on the spawned claude binary, the rest of the seed still works as a single-turn directive.
 
 7. Spawn the builder: use the Bash tool to run claude --print with that seed in the project's local_path (or in a fresh worktree if project.vcs.uses_worktrees is true). Capture stdout to a log at the spec dir's build.log.
 
