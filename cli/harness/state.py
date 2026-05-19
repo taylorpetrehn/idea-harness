@@ -249,6 +249,29 @@ class Idea:
             self.body = f"{self.body}{sep}\n## Notes\n\n{entry}"
         return self
 
+    def append_decision(self, text: str) -> "Idea":
+        """Append a dated entry under `## Decision`. Creates the section if
+        missing. This is the canonical artifact SKILL.md expects when an
+        open question is resolved (alongside status: brainstormed +
+        decided_at); the builder reads it as steering context."""
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        entry = f"> {stamp}: {text.strip()}\n"
+        if "## Decision" in self.body:
+            lines = self.body.splitlines(keepends=True)
+            out: list[str] = []
+            inserted = False
+            for line in lines:
+                out.append(line)
+                if not inserted and line.strip() == "## Decision":
+                    out.append("\n")
+                    out.append(entry)
+                    inserted = True
+            self.body = "".join(out)
+        else:
+            sep = "" if self.body.endswith("\n") else "\n"
+            self.body = f"{self.body}{sep}\n## Decision\n\n{entry}"
+        return self
+
     def render(self) -> str:
         fm = render_frontmatter(self.frontmatter)
         body = self.body if self.body.startswith("\n") else "\n" + self.body

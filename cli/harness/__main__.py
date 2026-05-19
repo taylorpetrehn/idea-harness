@@ -63,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--note", help="Optional note appended to ## Notes.")
         p.set_defaults(_handler=fn)
 
+    p_decide = ideas_sub.add_parser(
+        "decide",
+        help="Record a ## Decision + set decided_at (resolve a needs-detail open question / steer the idea).",
+    )
+    p_decide.add_argument("slug")
+    p_decide.add_argument("--decision", help="Decision / steering text written to ## Decision.")
+    p_decide.add_argument("--variant", help="Chosen variant identifier (e.g. 2 or 'B'); also mirrored to ## Notes for the builder.")
+    p_decide.set_defaults(_handler=ideas_cmd.cmd_decide)
+
     p_reroute = ideas_sub.add_parser("reroute", help="Change an idea's project key.")
     p_reroute.add_argument("slug")
     p_reroute.add_argument("project", help="New project key (must exist in projects.yml).")

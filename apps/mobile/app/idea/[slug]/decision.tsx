@@ -17,23 +17,29 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Markdown } from '../../../src/components/Markdown';
 import { ErrorState, Loading } from '../../../src/components/States';
 import { StatusPill } from '../../../src/components/StatusPill';
-import { useAccept, useIdea, useReject } from '../../../src/lib/mcp';
+import { useDecide, useIdea, useReject } from '../../../src/lib/mcp';
 import { colors, pressedOpacity, radius, space } from '../../../src/lib/theme';
 
-// Decision screen for ideas at status `needs-detail`.
-// Pulls the brainstorm's Variants + Open Question, lets the operator
-// accept (with a note) or reject. The harness uses `decided_at` as the
-// unblock signal; the note is appended to the idea's Notes section.
+// Decision screen for ideas at status `needs-detail`. Pulls the brainstorm's
+// Variants + Open Question and lets the operator *steer* the idea: pick a
+// variant and/or write a decision. Submitting writes a structured
+// `## Decision` block + sets `decided_at` and flips status to brainstormed
+// (the build cron then picks it up). Reject archives it.
 
 export default function DecisionScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const { data, isLoading, error, refetch, isRefetching } = useIdea(slug);
-  const accept = useAccept();
+  const decide = useDecide();
   const reject = useReject();
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState('');
+  const [text, setText] = useState('');
+  const [variant, setVariant] = useState<string | null>(null);
 
   const sections = useMemo(() => splitBody(data?.body ?? ''), [data?.body]);
+  const variantOptions = useMemo(
+    () => parseVariants(sections['Variants'] ?? ''),
+    [sections]
+  );
 
   if (isLoading) {
     return (
@@ -57,17 +63,25 @@ export default function DecisionScreen() {
   const openQuestion = sections['Open Question'] ?? sections['Open Questions'];
   const variants = sections['Variants'];
   const problem = sections['Problem'];
+  const trimmed = text.trim();
+  const canSubmit = (!!trimmed || !!variant) && !busy;
 
-  const decide = (action: 'accept' | 'reject') => {
+  const submitDecision = () => {
+    if (!trimmed && !variant) {
+      Alert.alert('Nothing to submit', 'Pick a variant or write a decision first.');
+      return;
+    }
     setBusy(true);
-    const mut = action === 'accept' ? accept : reject;
-    const trimmed = note.trim();
-    mut.mutate(
-      { slug: data.slug, ...(trimmed ? { note: trimmed } : {}) },
+    decide.mutate(
+      {
+        slug: data.slug,
+        ...(trimmed ? { decision: trimmed } : {}),
+        ...(variant ? { variant } : {}),
+      },
       {
         onSettled: () => setBusy(false),
         onSuccess: () => router.back(),
-        onError: (err: unknown) => Alert.alert(`${action} failed`, (err as Error).message),
+        onError: (err: unknown) => Alert.alert('Decision failed', (err as Error).message),
       }
     );
   };
@@ -75,7 +89,21 @@ export default function DecisionScreen() {
   const confirmReject = () =>
     Alert.alert('Reject this idea?', 'Archived but not deleted.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Reject', style: 'destructive', onPress: () => decide('reject') },
+      {
+        text: 'Reject',
+        style: 'destructive',
+        onPress: () => {
+          setBusy(true);
+          reject.mutate(
+            { slug: data.slug, ...(trimmed ? { note: trimmed } : {}) },
+            {
+              onSettled: () => setBusy(false),
+              onSuccess: () => router.back(),
+              onError: (err: unknown) => Alert.alert('Reject failed', (err as Error).message),
+            }
+          );
+        },
+      },
     ]);
 
   return (
@@ -106,24 +134,58 @@ export default function DecisionScreen() {
             </Section>
           ) : (
             <Text style={styles.hint}>
-              This idea is at needs-detail but has no Open Question section. Accept will set
-              decided_at and unblock the build cron.
+              No Open Question section — submitting still records a Decision, sets decided_at,
+              and unblocks the build cron.
             </Text>
           )}
 
-          <Text style={styles.noteLabel}>Decision note (optional)</Text>
+          {variantOptions.length > 0 && (
+            <View style={styles.pickWrap}>
+              <Text style={styles.label}>Choose a variant</Text>
+              <View style={styles.chips}>
+                {variantOptions.map((v) => {
+                  const selected = variant === v.n;
+                  return (
+                    <Pressable
+                      key={v.n}
+                      onPress={() => setVariant(selected ? null : v.n)}
+                      disabled={busy}
+                      style={({ pressed }) => [
+                        styles.chip,
+                        selected && styles.chipOn,
+                        pressedOpacity({ pressed }),
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Variant ${v.n}: ${v.label}`}
+                    >
+                      <Text style={[styles.chipText, selected && styles.chipTextOn]} numberOfLines={2}>
+                        {v.n}. {v.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+
+          <Text style={styles.label}>
+            Decision{variantOptions.length > 0 ? ' / rationale' : ''}
+            {variant ? '' : ' (or pick a variant above)'}
+          </Text>
           <TextInput
-            value={note}
-            onChangeText={setNote}
-            placeholder="Variant chosen, constraint, rationale…"
+            value={text}
+            onChangeText={setText}
+            placeholder="The call, a constraint, what to optimize for…"
             placeholderTextColor={colors.border}
             multiline
             style={styles.noteInput}
-            accessibilityLabel="Decision note"
+            accessibilityLabel="Decision text"
             editable={!busy}
           />
           <Text style={styles.noteHint}>
-            Appended to the idea&apos;s Notes section on accept or reject.
+            Written to a structured ## Decision block; sets decided_at and moves the idea to
+            brainstormed so the build cron picks it up.
           </Text>
 
           <View style={styles.actions}>
@@ -143,19 +205,19 @@ export default function DecisionScreen() {
               <Text style={styles.rejectText}>{busy ? '…' : 'Reject'}</Text>
             </Pressable>
             <Pressable
-              disabled={busy}
+              disabled={!canSubmit}
               style={({ pressed }) => [
                 styles.button,
                 styles.acceptButton,
-                busy && styles.disabled,
+                !canSubmit && styles.disabled,
                 pressedOpacity({ pressed }),
               ]}
-              onPress={() => decide('accept')}
+              onPress={submitDecision}
               accessibilityRole="button"
-              accessibilityLabel="Accept idea with note"
-              accessibilityState={{ disabled: busy }}
+              accessibilityLabel="Submit decision"
+              accessibilityState={{ disabled: !canSubmit }}
             >
-              <Text style={styles.acceptText}>{busy ? '…' : 'Accept'}</Text>
+              <Text style={styles.acceptText}>{busy ? '…' : 'Submit decision'}</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -201,6 +263,23 @@ function splitBody(body: string): Record<string, string> {
   return out;
 }
 
+// parseVariants — turn the Variants section's bullets into pick options.
+// `n` is the 1-based index (the server mirrors `variant N` into ## Notes,
+// which is exactly what the builder scrapes to override BUILD_VARIANT).
+function parseVariants(md: string): { n: string; label: string }[] {
+  const out: { n: string; label: string }[] = [];
+  for (const line of md.split('\n')) {
+    const m = line.match(/^\s*[-*]\s+(.*)$/);
+    if (!m) continue;
+    const label = m[1]
+      .replace(/\*\*/g, '')
+      .replace(/^\s*variant\s*\d+\s*[:\-—]\s*/i, '')
+      .trim();
+    if (label) out.push({ n: String(out.length + 1), label });
+  }
+  return out;
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: space.lg, gap: space.lg },
@@ -215,7 +294,20 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   hint: { color: colors.textMuted, fontStyle: 'italic' },
-  noteLabel: { color: colors.textPrimary, fontWeight: '600', fontSize: 14 },
+  pickWrap: { gap: space.sm },
+  label: { color: colors.textPrimary, fontWeight: '600', fontSize: 14 },
+  chips: { gap: space.sm },
+  chip: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.cardBorder,
+    paddingVertical: space.sm + 2,
+    paddingHorizontal: space.md,
+  },
+  chipOn: { borderColor: colors.success, backgroundColor: 'rgba(34,197,94,0.12)' },
+  chipText: { color: colors.textSecondary, fontSize: 14 },
+  chipTextOn: { color: colors.textPrimary, fontWeight: '600' },
   noteInput: {
     backgroundColor: colors.surface,
     color: colors.textPrimary,
