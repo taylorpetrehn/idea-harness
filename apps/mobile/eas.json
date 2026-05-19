@@ -21,8 +21,7 @@
   "submit": {
     "production": {
       "ios": {
-        "appleId": "APPLE_ID_EMAIL_OR_USE_EXPO_APPLE_ID_ENV",
-        "ascAppId": "ASC_APP_ID_FROM_APP_STORE_CONNECT"
+        "appleId": "taylor@1900barker.com"
       }
     }
   }
