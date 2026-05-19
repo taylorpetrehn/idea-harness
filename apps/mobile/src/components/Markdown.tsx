@@ -68,6 +68,13 @@ function parse(md: string): Block[] {
       flush();
       continue;
     }
+    // Soft-wrapped continuation of a list item (no blank line since the
+    // bullet) — fold it into that item instead of orphaning a paragraph.
+    const last = blocks[blocks.length - 1];
+    if (para.length === 0 && last && (last.kind === 'bullet' || last.kind === 'ordered')) {
+      last.text += ` ${line.trim()}`;
+      continue;
+    }
     para.push(line.trim());
   }
   flush();
