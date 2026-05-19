@@ -1,16 +1,9 @@
 import { Link, Stack, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ErrorState, Loading } from '../src/components/States';
 import { StatusPill } from '../src/components/StatusPill';
 import {
   HarnessNotConfigured,
@@ -19,6 +12,8 @@ import {
   type AgentSession,
   type IdeaSummary,
 } from '../src/lib/mcp';
+import { colors, pressedOpacity, radius, space } from '../src/lib/theme';
+import { timeAgo } from '../src/lib/time';
 
 const GROUP_ORDER = [
   'needs-critic-review',
@@ -59,27 +54,54 @@ export default function InboxScreen() {
       arr.push(idea);
       byStatus.set(idea.status, arr);
     }
+    // Within a group, most-recently-touched first — triage by recency.
+    const byRecency = (a: IdeaSummary, b: IdeaSummary) =>
+      Date.parse(b.last_touched ?? '') - Date.parse(a.last_touched ?? '') || 0;
     const ordered: Section[] = [];
     for (const status of GROUP_ORDER) {
       const rows = byStatus.get(status);
-      if (rows?.length) ordered.push({ title: status, data: rows });
+      if (rows?.length) ordered.push({ title: status, data: [...rows].sort(byRecency) });
     }
     for (const status of Array.from(byStatus.keys()).sort()) {
       if (!GROUP_ORDER.includes(status)) {
-        ordered.push({ title: status, data: byStatus.get(status)! });
+        ordered.push({ title: status, data: [...byStatus.get(status)!].sort(byRecency) });
       }
     }
     return ordered;
   }, [data]);
+
+  const headerRight = useMemo(
+    () => () => (
+      <Link href="/settings" asChild>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Settings"
+          accessibilityHint="Configure the harness URL and token"
+          hitSlop={12}
+          style={pressedOpacity}
+        >
+          <Text style={styles.headerLink}>⚙</Text>
+        </Pressable>
+      </Link>
+    ),
+    []
+  );
 
   if (error instanceof HarnessNotConfigured) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>Not configured yet</Text>
-          <Text style={styles.emptyBody}>Open Settings to point the app at your Mac's Tailscale URL and paste the bearer token.</Text>
+          <Text style={styles.emptyBody}>
+            Point the app at your Mac&apos;s Tailscale URL and paste the bearer token to start
+            triaging ideas.
+          </Text>
           <Link href="/settings" asChild>
-            <Pressable style={styles.button}>
+            <Pressable
+              style={({ pressed }) => [styles.button, pressedOpacity({ pressed })]}
+              accessibilityRole="button"
+              accessibilityLabel="Open Settings"
+            >
               <Text style={styles.buttonText}>Open Settings</Text>
             </Pressable>
           </Link>
@@ -89,48 +111,33 @@ export default function InboxScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <Stack.Screen
-        options={{
-          headerRight: () => (
-            <Link href="/settings" asChild>
-              <Pressable accessibilityRole="button" accessibilityLabel="Settings">
-                <Text style={styles.headerLink}>⚙</Text>
-              </Pressable>
-            </Link>
-          ),
-        }}
-      />
+    <SafeAreaView style={styles.container} edges={['bottom']}>
+      <Stack.Screen options={{ headerRight }} />
       {isLoading ? (
-        <View style={styles.empty}><ActivityIndicator color="#94a3b8" /></View>
+        <Loading label="Loading ideas…" />
       ) : error ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>Couldn't load ideas</Text>
-          <Text style={styles.emptyBody}>{(error as Error).message}</Text>
-          <Pressable style={styles.button} onPress={() => setRefreshSeq(s => s + 1)}>
-            <Text style={styles.buttonText}>Retry</Text>
-          </Pressable>
-        </View>
+        <ErrorState
+          title="Couldn't load ideas"
+          message={(error as Error).message}
+          onRetry={() => setRefreshSeq(s => s + 1)}
+        />
       ) : (
-        <FlatList
-          data={sections}
-          keyExtractor={s => s.title}
-          renderItem={({ item: section }) => (
-            <View style={styles.section}>
-              <Text style={styles.sectionHeader}>
-                {section.title} · {section.data.length}
-              </Text>
-              {section.data.map(idea => (
-                <IdeaRow key={idea.slug} idea={idea} />
-              ))}
-            </View>
+        <SectionList
+          sections={sections}
+          keyExtractor={item => item.slug}
+          stickySectionHeadersEnabled
+          contentContainerStyle={sections.length === 0 ? styles.flexGrow : undefined}
+          renderSectionHeader={({ section }) => (
+            <Text style={styles.sectionHeader}>
+              {section.title} · {section.data.length}
+            </Text>
           )}
+          renderItem={({ item }) => <IdeaRow idea={item} />}
+          SectionSeparatorComponent={() => <View style={styles.sectionGap} />}
           ListHeaderComponent={
             liveAgents.length > 0 ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionHeader}>
-                  active sessions · {liveAgents.length}
-                </Text>
+              <View style={styles.agentSection}>
+                <Text style={styles.sectionHeaderPlain}>active sessions · {liveAgents.length}</Text>
                 {liveAgents.map((a, idx) => (
                   <AgentRow key={a.id ?? `agent-${idx}`} agent={a} />
                 ))}
@@ -140,10 +147,21 @@ export default function InboxScreen() {
           ListEmptyComponent={
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>No ideas in flight</Text>
+              <Text style={styles.emptyBody}>
+                Pull to refresh, or capture one from the phone — it lands here once the harvest cron
+                picks it up.
+              </Text>
             </View>
           }
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} tintColor="#94a3b8" />
+            <RefreshControl
+              refreshing={isRefetching}
+              onRefresh={() => {
+                void refetch();
+                void refetchAgents();
+              }}
+              tintColor={colors.textSecondary}
+            />
           }
         />
       )}
@@ -152,10 +170,14 @@ export default function InboxScreen() {
 }
 
 function AgentRow({ agent }: { agent: AgentSession }) {
-  const dotStyle = [styles.agentDot, agent.status === 'running' ? styles.agentDotRun : styles.agentDotBlocked];
+  const running = agent.status === 'running';
   return (
-    <View style={styles.agentRow}>
-      <View style={dotStyle} />
+    <View
+      style={styles.agentRow}
+      accessible
+      accessibilityLabel={`${agent.status} session: ${agent.summary || 'no summary'}`}
+    >
+      <View style={[styles.agentDot, running ? styles.agentDotRun : styles.agentDotBlocked]} />
       <View style={styles.agentBody}>
         <Text style={styles.agentSummary} numberOfLines={2}>
           {agent.summary || '(no summary)'}
@@ -170,14 +192,23 @@ function AgentRow({ agent }: { agent: AgentSession }) {
 }
 
 function IdeaRow({ idea }: { idea: IdeaSummary }) {
+  const touched = timeAgo(idea.last_touched);
   return (
     <Link href={{ pathname: '/idea/[slug]', params: { slug: idea.slug } }} asChild>
-      <Pressable style={styles.row}>
+      <Pressable
+        style={({ pressed }) => [styles.row, pressedOpacity({ pressed })]}
+        accessibilityRole="button"
+        accessibilityLabel={`${idea.title}. ${idea.status}${idea.project ? `, project ${idea.project}` : ''}`}
+        accessibilityHint="Opens idea detail"
+      >
         <View style={styles.rowMeta}>
           <Text style={styles.project}>[{idea.project ?? '?'}]</Text>
           {idea.score != null && <Text style={styles.score}>· score {idea.score}</Text>}
+          {touched ? <Text style={styles.touched}>· {touched}</Text> : null}
         </View>
-        <Text style={styles.title} numberOfLines={2}>{idea.title}</Text>
+        <Text style={styles.title} numberOfLines={2}>
+          {idea.title}
+        </Text>
         <StatusPill status={idea.status} />
       </Pressable>
     </Link>
@@ -185,52 +216,73 @@ function IdeaRow({ idea }: { idea: IdeaSummary }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  section: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  container: { flex: 1, backgroundColor: colors.bg },
+  flexGrow: { flexGrow: 1 },
   sectionHeader: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
-    marginBottom: 8,
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: space.sm,
+    backgroundColor: colors.bg,
   },
+  sectionHeaderPlain: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: space.sm,
+  },
+  sectionGap: { height: space.xs },
+  agentSection: { paddingHorizontal: space.lg, paddingTop: space.md },
   row: {
-    padding: 12,
-    backgroundColor: '#1e293b',
-    borderRadius: 10,
-    marginBottom: 8,
-    gap: 6,
+    marginHorizontal: space.lg,
+    padding: space.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    marginBottom: space.sm,
+    gap: space.xs + 2,
   },
-  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  project: { color: '#a5b4fc', fontSize: 12, fontWeight: '600' },
-  score: { color: '#64748b', fontSize: 12 },
-  title: { color: '#f8fafc', fontSize: 15, fontWeight: '500' },
-  empty: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 12 },
-  emptyTitle: { color: '#f8fafc', fontSize: 18, fontWeight: '600' },
-  emptyBody: { color: '#94a3b8', textAlign: 'center', fontSize: 14 },
+  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: space.xs + 2, flexWrap: 'wrap' },
+  project: { color: colors.accent, fontSize: 12, fontWeight: '600' },
+  score: { color: colors.textSecondary, fontSize: 12 },
+  touched: { color: colors.textSecondary, fontSize: 12 },
+  title: { color: colors.textPrimary, fontSize: 15, fontWeight: '500' },
+  empty: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: space.xxl,
+    gap: space.md,
+  },
+  emptyTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '600' },
+  emptyBody: { color: colors.textSecondary, textAlign: 'center', fontSize: 14, lineHeight: 20 },
   button: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    backgroundColor: '#3b82f6',
-    borderRadius: 8,
-    marginTop: 12,
+    paddingHorizontal: space.xl,
+    paddingVertical: space.md,
+    backgroundColor: colors.primary,
+    borderRadius: radius.sm,
+    marginTop: space.md,
   },
-  buttonText: { color: '#f8fafc', fontWeight: '600' },
-  headerLink: { color: '#f8fafc', fontSize: 18, paddingHorizontal: 8 },
+  buttonText: { color: colors.textPrimary, fontWeight: '600' },
+  headerLink: { color: colors.textPrimary, fontSize: 20, paddingHorizontal: space.sm },
   agentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#1e293b',
-    borderRadius: 10,
-    marginBottom: 8,
-    gap: 12,
+    padding: space.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    marginBottom: space.sm,
+    gap: space.md,
   },
   agentDot: { width: 10, height: 10, borderRadius: 5 },
-  agentDotRun: { backgroundColor: '#22c55e' },
-  agentDotBlocked: { backgroundColor: '#f59e0b' },
+  agentDotRun: { backgroundColor: colors.success },
+  agentDotBlocked: { backgroundColor: colors.warn },
   agentBody: { flex: 1, gap: 2 },
-  agentSummary: { color: '#f8fafc', fontSize: 14, fontWeight: '500' },
-  agentMeta: { color: '#64748b', fontSize: 12 },
+  agentSummary: { color: colors.textPrimary, fontSize: 14, fontWeight: '500' },
+  agentMeta: { color: colors.textSecondary, fontSize: 12 },
 });

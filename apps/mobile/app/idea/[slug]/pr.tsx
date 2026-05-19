@@ -1,38 +1,36 @@
 import * as Linking from 'expo-linking';
 import { useLocalSearchParams } from 'expo-router';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ErrorState, Loading } from '../../../src/components/States';
 import { StatusPill } from '../../../src/components/StatusPill';
 import { useIdea } from '../../../src/lib/mcp';
+import { colors, pressedOpacity, radius, space } from '../../../src/lib/theme';
 
 // PR Status — for ideas at status pr-open or shipped.
 // Shows the GitHub PR link + (if present) the review gauntlet verdict
-// stored next to the idea as review.json. Phase 4 will deep-link to a
-// dedicated review-detail screen.
+// stored next to the idea as review.json.
 
 export default function PRStatusScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
-  const { data, isLoading, error } = useIdea(slug);
+  const { data, isLoading, error, refetch, isRefetching } = useIdea(slug);
 
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <ActivityIndicator color="#94a3b8" />
+        <Loading label="Loading PR status…" />
       </SafeAreaView>
     );
   }
   if (error || !data) {
     return (
       <SafeAreaView style={styles.container}>
-        <Text style={styles.error}>{error?.message ?? 'Idea not found.'}</Text>
+        <ErrorState
+          title="Couldn't load idea"
+          message={error?.message ?? 'Idea not found.'}
+          onRetry={() => void refetch()}
+        />
       </SafeAreaView>
     );
   }
@@ -44,7 +42,16 @@ export default function PRStatusScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefetching}
+            onRefresh={() => void refetch()}
+            tintColor={colors.textSecondary}
+          />
+        }
+      >
         <Text style={styles.title}>{data.title}</Text>
         <View style={styles.metaRow}>
           <StatusPill status={status} />
@@ -52,9 +59,16 @@ export default function PRStatusScreen() {
         </View>
 
         {prUrl ? (
-          <Pressable style={styles.card} onPress={() => void Linking.openURL(prUrl)}>
+          <Pressable
+            style={({ pressed }) => [styles.card, pressedOpacity({ pressed })]}
+            onPress={() => void Linking.openURL(prUrl)}
+            accessibilityRole="link"
+            accessibilityLabel="Open pull request in GitHub"
+          >
             <Text style={styles.cardLabel}>Pull request</Text>
-            <Text style={styles.cardValue} numberOfLines={2}>{prUrl}</Text>
+            <Text style={styles.cardValue} numberOfLines={2}>
+              {prUrl}
+            </Text>
             <Text style={styles.cardHint}>Tap to open in GitHub.</Text>
           </Pressable>
         ) : (
@@ -62,15 +76,23 @@ export default function PRStatusScreen() {
             <Text style={styles.cardLabel}>Pull request</Text>
             <Text style={styles.cardValue}>(not opened yet)</Text>
             <Text style={styles.cardHint}>
-              The builder hasn't produced a PR_URL yet. Wait for the next build cron tick or trigger one with `harness ideas build {data.slug}` on the Mac.
+              The builder hasn&apos;t produced a PR yet. It lands here automatically on the next
+              build-cron tick — pull to refresh to check.
             </Text>
           </View>
         )}
 
         {ghIssue && (
-          <Pressable style={styles.card} onPress={() => void Linking.openURL(ghIssue)}>
+          <Pressable
+            style={({ pressed }) => [styles.card, pressedOpacity({ pressed })]}
+            onPress={() => void Linking.openURL(ghIssue)}
+            accessibilityRole="link"
+            accessibilityLabel="Open source issue in GitHub"
+          >
             <Text style={styles.cardLabel}>Source issue</Text>
-            <Text style={styles.cardValue} numberOfLines={2}>{ghIssue}</Text>
+            <Text style={styles.cardValue} numberOfLines={2}>
+              {ghIssue}
+            </Text>
           </Pressable>
         )}
 
@@ -78,7 +100,7 @@ export default function PRStatusScreen() {
           <Text style={styles.cardLabel}>Build artifact</Text>
           <Text style={styles.cardValue}>{data.path}</Text>
           <Text style={styles.cardHint}>
-            review.json (if produced by the gauntlet) lives alongside this file. On the Mac: `cat ~/.claude/plans/specs/{data.slug}/review.json`.
+            review.json (if the review gauntlet ran) lives alongside this idea.md on the Mac.
           </Text>
         </View>
 
@@ -99,17 +121,22 @@ export default function PRStatusScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  scroll: { padding: 16, gap: 12 },
-  title: { color: '#f8fafc', fontSize: 20, fontWeight: '700' },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  meta: { color: '#94a3b8', fontSize: 13 },
-  card: { backgroundColor: '#1e293b', padding: 14, borderRadius: 10, gap: 6 },
-  cardLabel: { color: '#a5b4fc', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-  cardValue: { color: '#f8fafc', fontSize: 14 },
-  cardHint: { color: '#64748b', fontSize: 12 },
-  fmRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  fmKey: { color: '#94a3b8', fontSize: 12, width: 120 },
+  container: { flex: 1, backgroundColor: colors.bg },
+  scroll: { padding: space.lg, gap: space.md },
+  title: { color: colors.textPrimary, fontSize: 20, fontWeight: '700' },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  meta: { color: colors.textSecondary, fontSize: 13 },
+  card: { backgroundColor: colors.surface, padding: space.md + 2, borderRadius: radius.md, gap: space.xs + 2 },
+  cardLabel: {
+    color: colors.accent,
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  cardValue: { color: colors.textPrimary, fontSize: 14 },
+  cardHint: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+  fmRow: { flexDirection: 'row', gap: space.sm, alignItems: 'center' },
+  fmKey: { color: colors.textSecondary, fontSize: 12, width: 120 },
   fmValue: { color: '#e2e8f0', fontSize: 12, flex: 1 },
-  error: { color: '#ef4444', padding: 32, textAlign: 'center' },
 });
