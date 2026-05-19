@@ -3,13 +3,16 @@
     "name": "Idea Harness",
     "slug": "idea-harness-mobile",
     "version": "0.1.0",
+    "icon": "./assets/icon.png",
     "orientation": "portrait",
     "scheme": "idea-harness",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.taylorpetrehn.ideaharness"
+      "bundleIdentifier": "com.taylorpetrehn.ideaharness",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.taylorpetrehn.ideaharness"
