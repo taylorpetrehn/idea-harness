@@ -1,4 +1,4 @@
-import { Link, Stack, useLocalSearchParams, router } from 'expo-router';
+import { Stack, useLocalSearchParams, router } from 'expo-router';
 import { useState } from 'react';
 import {
   Alert,
@@ -118,28 +118,28 @@ export default function IdeaDetailScreen() {
         </View>
 
         {isNeedsDetail && (
-          <Link href={{ pathname: '/idea/[slug]/decision', params: { slug: data.slug } }} asChild>
-            <Pressable
-              style={({ pressed }) => [styles.cta, styles.ctaWarn, pressedOpacity({ pressed })]}
-              accessibilityRole="button"
-              accessibilityLabel="Open Decision"
-              accessibilityHint="Resolve the open question for this idea"
-            >
-              <Text style={styles.ctaText}>Open Decision →</Text>
-            </Pressable>
-          </Link>
+          <Pressable
+            onPress={() =>
+              router.push({ pathname: '/idea/[slug]/decision', params: { slug: data.slug } })
+            }
+            style={({ pressed }) => [styles.cta, styles.ctaWarn, pressedOpacity({ pressed })]}
+            accessibilityRole="button"
+            accessibilityLabel="Open Decision"
+            accessibilityHint="Resolve the open question for this idea"
+          >
+            <Text style={styles.ctaText}>Open Decision →</Text>
+          </Pressable>
         )}
         {isPrOpen && (
-          <Link href={{ pathname: '/idea/[slug]/pr', params: { slug: data.slug } }} asChild>
-            <Pressable
-              style={({ pressed }) => [styles.cta, styles.ctaPurple, pressedOpacity({ pressed })]}
-              accessibilityRole="button"
-              accessibilityLabel="PR Status"
-              accessibilityHint="View the pull request for this idea"
-            >
-              <Text style={styles.ctaTextLight}>PR Status →</Text>
-            </Pressable>
-          </Link>
+          <Pressable
+            onPress={() => router.push({ pathname: '/idea/[slug]/pr', params: { slug: data.slug } })}
+            style={({ pressed }) => [styles.cta, styles.ctaPurple, pressedOpacity({ pressed })]}
+            accessibilityRole="button"
+            accessibilityLabel="PR Status"
+            accessibilityHint="View the pull request for this idea"
+          >
+            <Text style={styles.ctaTextLight}>PR Status →</Text>
+          </Pressable>
         )}
 
         <View style={styles.bodyWrap}>

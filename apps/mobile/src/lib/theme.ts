@@ -11,7 +11,8 @@ export const colors = {
   bg: '#0f172a', // slate-900 — app background
   surface: '#1e293b', // slate-800 — cards / rows
   surfaceAlt: '#0b1220', // slightly darker inset
-  border: '#334155', // slate-700 — hairlines / outlines
+  border: '#334155', // slate-700 — hairlines / subtle dividers
+  cardBorder: '#475569', // slate-600 — visible card outline on the dark bg
 
   textPrimary: '#f8fafc', // slate-50
   textSecondary: '#94a3b8', // slate-400 — labels, meta
