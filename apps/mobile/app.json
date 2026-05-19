@@ -6,10 +6,12 @@
     "orientation": "portrait",
     "scheme": "idea-harness",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.taylorpetrehn.ideaharness"
+      "bundleIdentifier": "com.taylorpetrehn.ideaharness",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.taylorpetrehn.ideaharness"
