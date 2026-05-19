@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.taylorpetrehn.idea-harness-mcp</string>
+
+    <!-- Long-running JSON-RPC server for the Phase 3 mobile app.
+         `harness` is installed at /opt/homebrew/bin/harness (absolute path:
+         launchd does not get the login PATH). Bound to 0.0.0.0 so the phone
+         can reach it over Tailscale; access is gated by the bearer token in
+         --token-file (auto-generated on first run if missing). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/harness</string>
+        <string>mcp</string>
+        <string>serve</string>
+        <string>--http</string>
+        <string>--bind</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>7777</string>
+        <string>--token-file</string>
+        <string>/Users/taylorpetrehn/.secrets/harness-mobile-token</string>
+        <string>--generate-token</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- It's a server: relaunch if it ever exits. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/taylorpetrehn/.claude/skills/idea-harness/logs/mcp.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/taylorpetrehn/.claude/skills/idea-harness/logs/mcp.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/taylorpetrehn</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

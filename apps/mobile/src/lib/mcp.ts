@@ -146,8 +146,13 @@ function makeMutation(tool: string) {
   return function useIdeaMutation() {
     const qc = useQueryClient();
     return useMutation({
-      mutationFn: (args: { slug: string; note?: string; project?: string }) =>
-        callTool<{ slug: string; previous_status?: string; status?: string }>(tool, args),
+      mutationFn: (args: {
+        slug: string;
+        note?: string;
+        project?: string;
+        decision?: string;
+        variant?: string;
+      }) => callTool<{ slug: string; previous_status?: string; status?: string }>(tool, args),
       onSuccess: (_data, vars) => {
         // Invalidate both the list and the specific idea.
         qc.invalidateQueries({ queryKey: ['ideas'] });
@@ -160,6 +165,8 @@ function makeMutation(tool: string) {
 export const useAccept = makeMutation('ideas.accept');
 export const useReject = makeMutation('ideas.reject');
 export const useReroute = makeMutation('ideas.reroute');
+// Structured ## Decision write + decided_at (+ flips needs-detail → brainstormed).
+export const useDecide = makeMutation('ideas.decide');
 
 /**
  * Live Claude Code agent sessions via `claude agents --json` on the host.

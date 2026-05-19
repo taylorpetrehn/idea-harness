@@ -110,6 +110,47 @@ def tool_ideas_reroute(args: dict[str, Any]) -> dict[str, Any]:
     return {"slug": args["slug"], "previous_project": previous, "project": new_project}
 
 
+def tool_ideas_decide(args: dict[str, Any]) -> dict[str, Any]:
+    """Record a structured ## Decision + decided_at. From needs-detail this
+    resolves the open question and flips to brainstormed; on an already
+    brainstormed/accepted idea it re-records the decision without changing
+    status (steer something still queued)."""
+    idea = Idea.from_slug(args["slug"])
+    prev = idea.status
+    if prev not in ("needs-detail", "brainstormed", "accepted"):
+        raise InvalidStatus(
+            f"decide applies to needs-detail / brainstormed / accepted, not {prev!r}"
+        )
+    decision = (args.get("decision") or "").strip()
+    variant = args.get("variant")
+    if not decision and not variant:
+        raise ValueError("decide requires 'decision' text or 'variant'")
+    if variant and decision:
+        text = f"variant {variant} — {decision}"
+    elif variant:
+        text = f"chose variant {variant}"
+    else:
+        text = decision
+    idea.append_decision(text)
+    if variant:
+        idea.append_note(f"decided via MCP: variant {variant}")
+    idea.set(decided_at=now_iso())
+    if prev == "needs-detail":
+        idea.set_status("brainstormed")
+        new_status = "brainstormed"
+    else:
+        idea.set(last_touched=now_iso())
+        new_status = prev
+    idea.save()
+    index_mod.upsert(idea)
+    return {
+        "slug": args["slug"],
+        "previous_status": prev,
+        "status": new_status,
+        "decided_at": idea.get("decided_at"),
+    }
+
+
 def tool_agents_list(args: dict[str, Any]) -> dict[str, Any]:
     """Wrap `claude agents --json` (new in Claude Code 2.1.139).
 
@@ -271,6 +312,27 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
                 "project": {"type": "string"},
             },
             "required": ["slug", "project"],
+        },
+    },
+    "ideas.decide": {
+        "handler": tool_ideas_decide,
+        "description": (
+            "Record a structured ## Decision + decided_at. From needs-detail this "
+            "resolves the open question and flips status to brainstormed (build cron "
+            "then picks it up); on a brainstormed/accepted idea it re-records the "
+            "decision without changing status. Pass decision text and/or a chosen variant."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string"},
+                "decision": {"type": "string", "description": "Decision / steering text."},
+                "variant": {
+                    "type": "string",
+                    "description": "Chosen variant id (e.g. '2' or 'B'); mirrored to ## Notes for the builder.",
+                },
+            },
+            "required": ["slug"],
         },
     },
     "capture": {

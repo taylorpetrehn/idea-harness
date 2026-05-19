@@ -110,6 +110,58 @@ def _mutate_status(slug: str, new_status: str, *, note: str | None, action: str)
     return 0
 
 
+_DECIDE_STATUSES = ("needs-detail", "brainstormed", "accepted")
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    """Record a structured ## Decision (steer the idea) + set decided_at.
+
+    From needs-detail this resolves the open question and flips to
+    brainstormed so the build cron picks it up. On an already-decided
+    brainstormed/accepted idea it just (re)records the decision without
+    changing status — lets Taylor steer something still in the queue.
+    """
+    try:
+        idea = Idea.from_slug(args.slug)
+    except IdeaNotFound as exc:
+        sys.stderr.write(f"[harness] {exc}\n")
+        return 1
+    prev = idea.status
+    if prev not in _DECIDE_STATUSES:
+        sys.stderr.write(
+            f"[harness] refusing to decide {args.slug}: status is {prev!r}; "
+            f"decide applies to {' / '.join(_DECIDE_STATUSES)}.\n"
+        )
+        return 2
+    decision = (args.decision or "").strip()
+    variant = getattr(args, "variant", None)
+    if not decision and not variant:
+        sys.stderr.write("[harness] decide requires --decision text or --variant\n")
+        return 2
+    if variant and decision:
+        text = f"variant {variant} — {decision}"
+    elif variant:
+        text = f"chose variant {variant}"
+    else:
+        text = decision
+    idea.append_decision(text)
+    # The builder scrapes the most recent `variant N` line in ## Notes to
+    # override its default BUILD_VARIANT — mirror the choice there so the
+    # existing build path picks it up without changes.
+    if variant:
+        idea.append_note(f"decided via harness: variant {variant}")
+    idea.set(decided_at=now_iso())
+    if prev == "needs-detail":
+        idea.set_status("brainstormed")
+        new_status = "brainstormed"
+    else:
+        idea.set(last_touched=now_iso())
+        new_status = prev
+    idea.save()
+    sys.stdout.write(f"{args.slug}: decided ({prev} → {new_status})\n")
+    return 0
+
+
 # ----- build / brainstorm (delegate to existing scripts) ----------------
 
 # These verbs flip status + immediately shell out to the matching cron
