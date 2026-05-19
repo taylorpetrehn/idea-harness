@@ -98,6 +98,7 @@ The cron, all on your Mac, all native macOS. No third-party schedulers, no cloud
 | `com.taylorpetrehn.idea-harness-brainstorm` | every **1 hr** | If any `idea.md` has `status: captured`, spawns one autonomous `claude --print` session that runs steps 2–5 of the skill (route, score, brainstorm, critic via fresh subagent, sharpen). |
 | `com.taylorpetrehn.idea-harness-escalate` | every **10 min** | For each `idea.md` at `status: needs-detail` without an `escalated_at` timestamp, daemonizes a `claude --remote-control` session inside a pseudo-tty so it shows up on your phone, seeded with the brainstorm + open question. |
 | `com.taylorpetrehn.idea-harness-build` | every **15 min** | For each `idea.md` at `status: brainstormed` (= accepted in this consolidated flow) without `do_not_build: true`, spawns one autonomous `claude --print` orchestrator that builds the oldest pending idea: validates handoff, pre-flight hygiene check, spawns a builder in the target repo, parses `PR_URL=<url>` from output, flips `status: pr-open`. One idea per tick to bound cost. |
+| `com.taylorpetrehn.idea-harness-mcp` | **persistent** (`KeepAlive`) | Runs `harness mcp serve --http` so the Phase 3 mobile app can reach the harness over Tailscale. Binds `0.0.0.0:7777`, bearer-token gated (auto-generated at `~/.secrets/harness-mobile-token`). Relaunches if it exits; survives reboot. Without this the mobile bridge only works while a `harness mcp serve` is run by hand. |
 
 ---
 
@@ -768,11 +769,18 @@ Phase 3 of the bridge plan adds two big pieces:
 harness mcp serve --http --token-file ~/.secrets/harness-mobile-token --generate-token
 # Ctrl-C once it logs the bind line — we just wanted the token file.
 
-# 2) Start the server bound to the tailnet IP. Wrap this in a LaunchAgent for production.
+# 2a) Quick / dev: run it in the foreground bound to the tailnet IP.
 TAILSCALE_IP=$(tailscale ip -4)
 harness mcp serve --http \
   --bind "$TAILSCALE_IP" --port 7777 \
   --token-file ~/.secrets/harness-mobile-token
+
+# 2b) Production: install the managed job so it survives reboot / terminal close.
+#     (Binds 0.0.0.0:7777 — reachable over Tailscale, bearer-token gated.)
+cp templates/launchagents/com.taylorpetrehn.idea-harness-mcp.plist \
+   ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.taylorpetrehn.idea-harness-mcp.plist
+launchctl list | grep idea-harness-mcp   # confirm it's running
 
 # 3) On the phone (Expo Go or a dev client of apps/mobile/), open Settings:
 #      URL:    http://<tailnet-IP>:7777
