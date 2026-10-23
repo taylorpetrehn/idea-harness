@@ -1,0 +1,16 @@
+{
+  "head_sha": "e572c0de758e726f893d8862fd417fe91748c590",
+  "status": "pass",
+  "scenario": "Installed Expo tooling shell-quote rejection and iOS JavaScript export",
+  "expected": "Reject newline-bearing object operator tokens; preserve normal quoting and mobile compilation",
+  "observed": "Rejection assertion fails on original1.8.3 and passes on locked1.12.0; normal quote/parse passes; fresh npmci, tsc and Expo iOS export1084modules pass; audit critical1to0",
+  "environment": "macOSarm64, Node22.23.4; isolated checkout; Metro export only; no native build, device or provider actions",
+  "build": "Expo55 iOS JavaScript export at e572c0de758e726f893d8862fd417fe91748c590",
+  "limitations": [
+    "No native app JS changed or device proof; this is a tooling resolution.",
+    "Audit retains31high8moderate1low inherited groups; no global audit-clean claim.",
+    "npm regenerated optional peer metadata and removed an incompatible auto-installed react-dom peer; manifest React and Expo versions unchanged."
+  ],
+  "advisory": "https://github.com/ljharb/shell-quote/security/advisories/GHSA-w7jw-789q-3m8p",
+  "base_sha": "d5a36de97a95c81ea495052a620c4bfd1073cf68"
+}
