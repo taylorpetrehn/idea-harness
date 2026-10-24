@@ -1,0 +1,39 @@
+{
+  "head_sha": "89e49cacc98a5398312fe4edf85da8fd22fea199",
+  "status": "pass",
+  "scenario": "Validate all EAS build profiles use patched Node24.22.1 and compile the mobile app after compatible dependency fixes",
+  "expected": "Official EAS config schema accepts exact Node24.22.1 in development/preview/production, direct Expo/React/app manifest stays unchanged, normal navigation-key/source-map/shell-quote behavior and iOS compilation pass",
+  "observed": "All3 profiles pass EAS25.3.0 schema and semantic-only-node-field check; npmci --ignore-scripts and tsc pass; iOS Hermes export succeeds; safe nanoid/source-map smoke and existing shell-quote rejection guard pass; same10 preexisting missingreact-dom webpeer findings on base+head; fresh audit highgroups15\u21926,total24\u219214",
+  "environment": "macOSarm64 isolated clone; portable official Node22.23.4; offline JS export; no credentials, cloud build, simulator, OTA or store submission",
+  "build": "iOS Hermes JavaScript export entry-8099f4f4489faf09aea4ed7eecb8e97e.hbc, sha256 3e44db409e702a29e0fd4c865397cd5672b0dfc0b1a6fa187bb40b506ae616ee",
+  "base_sha": "5d08c6817bc6b1bc617ee91eb953c5e98a0be37d",
+  "checked_at_utc": "2026-10-24T13:35:39.568691+00:00",
+  "commands": [
+    "npm ci --ignore-scripts --no-audit --no-fund",
+    "npm run tsc",
+    "expo export --platform ios --output-dir <isolated evidence>",
+    "EAS25.3.0 BuildProfileSchema.validate for3profiles plus exact semantic diff",
+    "nanoid positive default/custom generator and source-map-js roundtrip",
+    "retained shell-quote regression with no shell execution"
+  ],
+  "audit_before": {
+    "high": 15,
+    "moderate": 8,
+    "low": 1,
+    "critical": 0,
+    "total": 24
+  },
+  "audit_after": {
+    "high": 6,
+    "moderate": 7,
+    "low": 1,
+    "critical": 0,
+    "total": 14
+  },
+  "limitations": [
+    "Cloud EAS worker Node24.22.1 has not been observed; effective on the next build using these profiles. No existing device artifact updated.",
+    "6 high package groups remain via image-size1.x requiring API-major update, node-forge with no upstream fixed version reported, and Zod3 constrained by Expo CLI; no blind major overrides or Expo downgrade.",
+    "npm ls --all still reports10 missingreact-dom webpeers, identical to baseline. This iOS-only scope passed compilation; web support unverified.",
+    "No user-visible feature changed; no UI/device run. Independent controller review and merge remain pending."
+  ]
+}
