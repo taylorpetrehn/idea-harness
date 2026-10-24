@@ -5,15 +5,18 @@
   },
   "build": {
     "development": {
+      "node": "24.22.1",
       "developmentClient": true,
       "distribution": "internal",
       "ios": { "simulator": true }
     },
     "preview": {
+      "node": "24.22.1",
       "distribution": "internal",
       "ios": { "resourceClass": "m-medium" }
     },
     "production": {
+      "node": "24.22.1",
       "autoIncrement": true,
       "ios": { "resourceClass": "m-medium" }
     }
